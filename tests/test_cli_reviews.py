@@ -225,6 +225,91 @@ def test_the_row_shows_open_finding_count(env, fake_bin, capsys):
     assert "1 open" in capsys.readouterr().out
 
 
+def _seed_findings(env, *findings):
+    from ticket.store import Store
+
+    store = Store(env / "store")
+    store.add_findings("acme/api#115", list(findings))
+    return store
+
+
+def _easy(summary="s"):
+    return {
+        "file": "a.py",
+        "summary": summary,
+        "severity": "maintenance",
+        "effort": "easy",
+    }
+
+
+def test_fix_all_works_the_queue_waiting_between_easy_findings(
+    env, fake_bin, monkeypatch, capsys
+):
+    """The bot runs one action per PR and silently drops a second dispatch, so
+    two /edit comments must not go out back to back."""
+    from ticket import cli
+
+    started(fake_bin)
+    store = _seed_findings(env, _easy("first"), _easy("second"))
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "aaa"}))
+
+    order = []
+
+    def fake_wait(pr_ref, before, **kwargs):
+        order.append(("wait", before))
+        return "bbb"
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", fake_wait)
+    real_comment = cli.gh.pr_comment
+
+    def spy_comment(pr_ref, body, *, dry_run):
+        order.append(("comment", body.split("\n")[0]))
+        return real_comment(pr_ref, body, dry_run=dry_run)
+
+    monkeypatch.setattr(cli.gh, "pr_comment", spy_comment)
+
+    assert main(["fix", "ABC-123", "--all"]) == 0
+
+    kinds = [step[0] for step in order]
+    assert kinds == ["comment", "wait", "comment", "wait"]
+    assert store.read_pr("acme/api#115")["head"] == "bbb"
+
+
+def test_fix_all_skips_findings_with_no_effort(env, fake_bin, capsys):
+    started(fake_bin)
+    _seed_findings(env, _easy("has effort"), {"summary": "unjudged", "effort": None})
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "aaa"}))
+    capsys.readouterr()
+
+    assert main(["fix", "ABC-123", "--all", "--dry-run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "no effort set, skipped: f02" in out
+    assert "f01:" in out
+
+
+def test_fix_all_does_not_wait_on_a_hard_finding(env, fake_bin, monkeypatch, capsys):
+    """A hard fix commits locally; the remote head never moves, so a wait would
+    poll until it gave up."""
+    from ticket import cli
+
+    started(fake_bin)
+    _seed_findings(env, {"summary": "retry loop", "effort": "hard"})
+
+    def fail_wait(*a, **kw):
+        raise AssertionError("waited on a hard fix")
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", fail_wait)
+    assert main(["fix", "ABC-123", "--all"]) == 0
+
+
+def test_fix_refuses_a_finding_id_together_with_all(env, fake_bin, capsys):
+    started(fake_bin)
+    _seed_findings(env, _easy())
+    assert main(["fix", "ABC-123", "f01", "--all"]) == 1
+    assert "not both" in capsys.readouterr().err
+
+
 def test_fix_wait_baselines_on_the_live_head(env, fake_bin, monkeypatch):
     """The stored head is None for a PR we only ever collected from, and stale
     once an earlier fix moved it. Either would make the wait return at once."""

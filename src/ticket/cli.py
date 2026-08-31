@@ -23,7 +23,7 @@ from . import steps as steps_module
 from .config import Config, load_config
 from .effort import EFFORTS
 from .errors import TicketError
-from .resolve import Action, active_pr, next_action
+from .resolve import Action, active_pr, next_action, open_findings
 from .store import Store, now
 
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
@@ -377,8 +377,27 @@ def cmd_fix(args) -> int:
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
 
+    if args.finding and args.all:
+        raise TicketError("pass a finding id or --all, not both")
+
+    queue = open_findings(inner.store.read_findings(pr_ref))
+    efforts = {f["id"]: f.get("effort") for f in queue}
+
     if args.finding:
         targets = [args.finding]
+    elif args.all:
+        # Findings with no effort are refused by `fix_one`, so working the whole
+        # queue skips them rather than stopping on the first one.
+        targets = [f["id"] for f in queue if f.get("effort") in EFFORTS]
+        stuck = [f["id"] for f in queue if f.get("effort") not in EFFORTS]
+        if stuck:
+            print(
+                f"no effort set, skipped: {', '.join(stuck)}. "
+                f"Set one with: ticket effort {args.key} <id> easy|hard"
+            )
+        if not targets:
+            print("nothing to fix")
+            return 0
     else:
         action = resolve_for(inner, ticket)
         if action.kind != "fix":
@@ -386,8 +405,14 @@ def cmd_fix(args) -> int:
         targets = [action.target]
 
     for finding_id in targets:
+        # The bot runs one action per PR and silently drops a second dispatch,
+        # so an easy fix waits for its commit before the next one goes out.
+        # `--all` implies that wait; without it the second /edit vanishes with
+        # no error. A hard fix commits locally and never waits: the remote head
+        # does not move, so waiting on it would poll until it gave up.
+        wait_here = (args.wait or args.all) and efforts.get(finding_id) == "easy"
         before = None
-        if args.wait and not args.dry_run:
+        if wait_here and not args.dry_run:
             # The live head, not the stored one: the stored value is None for a
             # PR we have only ever collected from, and stale once an earlier fix
             # moved the head. Either makes the wait below return immediately.
@@ -396,9 +421,7 @@ def cmd_fix(args) -> int:
             inner.cfg, inner.store, ticket, pr_ref, finding_id, dry_run=args.dry_run
         )
         print(f"{finding_id}: {status}")
-        if status == "open" and not args.dry_run and args.wait:
-            # The bot runs one action per PR and silently drops a second
-            # dispatch, so wait for its commit before sending anything else.
+        if status == "open" and not args.dry_run and wait_here:
             head = fix_module.wait_for_head(pr_ref, before)
             # ensure_pr, not read_pr: the document does not exist yet when the
             # finding came from a source we only ever collected.
@@ -656,6 +679,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("finding", nargs="?")
     p.add_argument("--pr")
     p.add_argument("--wait", action="store_true", help="wait for the bot's commit")
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="work every open finding in order, waiting between easy ones",
+    )
     p.add_argument("--dry-run", action="store_true")
 
     p = add("decide", cmd_decide, help="close a finding as wontfix")

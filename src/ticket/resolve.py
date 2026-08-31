@@ -74,18 +74,24 @@ def _uncollected(pr: dict) -> str | None:
     return None
 
 
-def _open_finding(findings: dict | None) -> dict | None:
+def open_findings(findings: dict | None) -> list[dict]:
+    """Every open finding, in the order they should be worked.
+
+    Remote (easy) work goes out before local (hard) work, so a local commit
+    never lands on a head the bot then moves past. Findings with no effort go
+    last: effort is never inferred from severity, so they need `ticket effort`.
+    """
     if not findings:
-        return None
+        return []
     is_open = [f for f in findings.get("findings") or [] if f.get("status") == "open"]
-    if not is_open:
-        return None
-    # Remote (easy) work goes out before local (hard) work, so a local commit
-    # never lands on a head the bot then moves past. Findings with no effort go
-    # last: effort is never inferred from severity, so they need `ticket effort`.
     order = {"easy": 0, "hard": 1}
     is_open.sort(key=lambda f: (order.get(f.get("effort"), 2), f["id"]))
-    return is_open[0]
+    return is_open
+
+
+def _open_finding(findings: dict | None) -> dict | None:
+    queue = open_findings(findings)
+    return queue[0] if queue else None
 
 
 def _next_review(cfg: Config, pr: dict) -> str | None:
