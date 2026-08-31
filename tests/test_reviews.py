@@ -117,3 +117,18 @@ def test_dry_run_posts_nothing_and_records_nothing(cfg, store, fake_bin):
     dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("docs-tests"), dry_run=True)
     assert [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]] == []
     assert store.read_pr("acme/api#115") is None
+
+
+def test_dry_run_still_syncs_the_worktree(cfg, store, fake_bin, tmp_path):
+    """Decision #22: --no-sync is sync's opt-out, deliberately separate from
+    --dry-run. A dry run must not post/write, but it should still fetch to
+    keep the checkout fresh -- this covers the local-transport dry-run path
+    with a worktree present."""
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    ticket = ticket_doc()
+    ticket["worktree"] = str(checkout)
+    dispatch(cfg, store, ticket, "acme/api#115", cfg.review("architecture"), dry_run=True)
+    assert fake_bin.calls_to("claude") == []
+    assert [c for c in fake_bin.calls_to("git") if c[1:2] == ["fetch"]] != []

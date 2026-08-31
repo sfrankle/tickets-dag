@@ -70,9 +70,11 @@ def dispatch(
     pr = ensure_pr(store, ticket, pr_ref)
     prompt_text = cfg.path_to(review.prompt).read_text()
 
-    # Sync first so a local review reads the same diff the PR shows. Skipped
-    # on a dry run: a dry run must not touch the checkout, only report.
-    if not dry_run and cfg.sync and ticket.get("worktree"):
+    # Sync first so a local review reads the same diff the PR shows. This
+    # runs even on a dry run: a dry run must not post/write, but it should
+    # still fetch to keep the checkout fresh (decision #22 — --no-sync is
+    # sync's opt-out, deliberately separate from --dry-run).
+    if cfg.sync and ticket.get("worktree"):
         reason = gh.sync(Path(ticket["worktree"]))
         if reason:
             print(f"sync: {reason}")
