@@ -47,16 +47,27 @@ reviews, finding statuses). What to do next is recomputed on every call. There i
 no cursor to keep in sync, and skipping is a flag the resolver honours rather
 than a state transition.
 
-Resolution order, first match wins:
+Resolution order, first match wins (**reordered by decision #20** — steps now
+come before reviews; the original order is kept below, struck through, because
+the reasoning still reads):
 
 1. A dispatched review whose result has not been collected → `collect`.
 2. An open finding on the active PR → `fix`.
-3. An undispatched, unskipped review whose predecessors are done, in `order` → `review`.
-4. The first step whose `needs` are satisfied and which is neither done nor skipped.
+3. ~~An undispatched, unskipped review whose predecessors are done, in `order` → `review`.~~
+   The first step whose `needs` are satisfied and which is neither done nor skipped.
+4. ~~The first step whose `needs` are satisfied and which is neither done nor skipped.~~
+   An undispatched, unskipped review whose predecessors are done, in `order` → `review`.
 5. Nothing → the ticket is at rest; print why.
 
-Rules 1–3 only apply once the ticket has a PR. Before `draft-pr`, the resolver
-falls straight through to rule 4, so the pre-PR walk is a plain step sequence.
+A runnable step outranks dispatching a new review, so a step declared after
+`draft-pr` — `describe` is the obvious one — runs where the config puts it
+rather than after the whole review cycle drains. Collect and fix stay ahead of
+it: both concern the diff already on the PR.
+
+Rules 1, 2 and 4 only apply once the ticket has a PR, which means the moment a
+PR is registered on the ticket — not the moment a PR document is written, since
+that only happens on the first dispatch. Before `draft-pr`, the resolver falls
+straight through to the step rule, so the pre-PR walk is a plain step sequence.
 
 ## 3. Configuration
 
@@ -81,6 +92,14 @@ models:
 
 defaults:
   model: opus
+
+sync: true                                # fetch + fast-forward before anything
+                                          # that reads a checkout (decision #22)
+
+worktrees:                                # decision #23
+  enabled: true                           # false: work in the clone on a branch
+  root: ~/worktrees
+  branch: "{key}"                         # {key} {repo} {owner} {name}
 
 steps:
   - id: evaluate
@@ -113,6 +132,7 @@ steps:
     model: opus
     prompt: prompts/implement.md
     needs: [worktree]
+    args: [--permission-mode, acceptEdits]   # extra claude argv: agent mode
 
   - id: draft-pr
     run: scripts/draft-pr.sh
@@ -143,8 +163,10 @@ reviews:                                  # only the AI reviews *we* kick off
 
 repos:
   acme/api:
+    path: ~/code/api                      # the clone worktrees are added from
     reviews: [docs-tests]                 # this repo runs only one of ours
   acme/infra:
+    path: ~/code/infra
     steps:
       skip: [describe]
 ```
@@ -164,7 +186,24 @@ repos:
 - **Models are named by alias.** `opus`, not `opus-5`. The alias table is the only
   place a model ID appears, so a new release is one edit.
 - **Repo overrides are shallow.** `reviews:` replaces the list; `steps.skip:`
-  subtracts from it. No deep merge, no inheritance chains.
+  subtracts from it. No deep merge, no inheritance chains. A `steps.skip:` that
+  strands a dependent — skipping a step another step `needs` — is rejected at
+  load, because the step is *removed* rather than marked satisfied and the row
+  would otherwise go silently to rest. (`ticket skip` is the other thing: it
+  marks a step satisfied for one ticket.)
+- **Steps run in the ticket's checkout**, which is whatever `worktree.sh`
+  announced with `ticket-worktree:`, else `repos.<repo>.path`, else the config
+  directory. `worktrees.enabled` decides whether that is a worktree of its own
+  or the clone on a branch; the engine only ever learns the path, so the choice
+  lives in the script and the config (decision #23).
+- **`sync: true` fetches early and often** (decision #22). `git fetch --prune`
+  and a fast-forward where one is possible, before every command that reads a
+  checkout. The gh bot commits on the remote, so without this a trailer scan
+  never closes a finding. It never rebases, never merges non-fast-forward, and
+  never touches uncommitted work. `--no-sync` opts out.
+- **`args:` on a step or review** is appended to the `claude` argv. Agent mode
+  lives here; a handoff that has to write files needs it. Prompts themselves go
+  on stdin, never argv (decision #21).
 
 ## 4. Reviews, findings, fixes
 
@@ -459,6 +498,8 @@ Each has one job, a stated interface, and can be tested without the others.
 | `config.py` | Load and validate config, resolve repo overrides and model aliases |
 | `store.py` | Read/write ticket, PR, and findings JSON; atomic writes; locking |
 | `resolve.py` | Given a ticket's state, return the next action. Pure function. |
+| `gh.py` | `gh`/`git` subprocess wrappers: retry, `pr_ref` splitting, `sync` |
+| `effort.py` | Haiku's easy/hard estimate at ingestion (decision #16) |
 | `steps.py` | Execute a step by kind: script, gate, handoff |
 | `reviews.py` | Dispatch a review over either transport |
 | `collect.py` | Fetch from `gh`, dedupe, hand bodies to the parser |
