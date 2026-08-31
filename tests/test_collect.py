@@ -193,6 +193,37 @@ def test_the_same_finding_arriving_twice_is_minted_once(cfg, store, fake_bin):
     assert len(store.read_findings("acme/api#115")["findings"]) == 3
 
 
+def test_a_resolved_finding_reopens_if_re_raised(cfg, store, fake_bin):
+    """A finding that was resolved (or marked wontfix) and is then re-raised
+    by a later review round — because the fix was actually wrong — must get
+    a fresh entry, not be silently dropped as a duplicate. Dedup only counts
+    against still-`open` findings."""
+    seeded_pr(store)
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    ticket = ticket_doc()
+    collect(cfg, store, ticket, "acme/api#115")
+    doc = store.read_findings("acme/api#115")
+    doc["findings"][0]["status"] = "resolved"
+    store.write_findings(doc)
+
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload(body, review_id="PRR_2"),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    second = collect(cfg, store, ticket, "acme/api#115")
+
+    assert second[0]["findings"] == ["f04"]
+    findings = store.read_findings("acme/api#115")["findings"]
+    assert len(findings) == 4
+    assert findings[3]["status"] == "open"
+    assert (findings[3]["file"], findings[3]["summary"]) == (
+        doc["findings"][0]["file"], doc["findings"][0]["summary"],
+    )
+
+
 def test_collect_fetches_first(cfg, store, fake_bin, tmp_path):
     seeded_pr(store)
     checkout = tmp_path / "checkout"

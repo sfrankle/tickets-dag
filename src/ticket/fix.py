@@ -62,7 +62,7 @@ def worktree_of(ticket: dict) -> Path:
     return Path(path)
 
 
-def scan_trailers(worktree: Path, since: str | None = None) -> dict[str, str]:
+def scan_trailers(worktree: Path) -> dict[str, str]:
     """finding id -> commit sha, newest wins.
 
     Scans the upstream ref as well as HEAD, because the bot's commits are on the
@@ -76,8 +76,6 @@ def scan_trailers(worktree: Path, since: str | None = None) -> dict[str, str]:
     except GhError:
         pass
     argv = ["git", "log", "--format=%H%x00%B%x1e", *revisions]
-    if since:
-        argv = ["git", "log", "--format=%H%x00%B%x1e", f"{since}..HEAD"]
     text = gh.run(argv, cwd=worktree, retries=1)
     found: dict[str, str] = {}
     for entry in text.split("\x1e"):

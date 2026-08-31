@@ -41,6 +41,10 @@ DETAILS_RE = re.compile(
 )
 VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*", re.MULTILINE)
 EMPTY_RE = re.compile(r"^\s*(None\.?|No findings\.?)\s*$", re.IGNORECASE | re.MULTILINE)
+# Known limitation: this can match a non-file backtick-quoted token that
+# happens to look like `word.ext` (e.g. a version string like `v1.2`) in
+# unusual review text. Low consequence — a wrong `file` value only degrades
+# the effort prompt/edit hint, nothing structural.
 FILE_RE = re.compile(r"`([^`\s]+\.[A-Za-z0-9]+)`")
 
 HAIKU_PROMPT = """Split the following code review into individual findings.

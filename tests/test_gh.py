@@ -88,6 +88,16 @@ def test_sync_on_nothing_is_a_no_op(fake_bin):
     assert fake_bin.calls == []
 
 
+def test_sync_on_a_directory_with_no_git_is_reported_not_fetched(tmp_path, fake_bin):
+    """A directory that exists but was never a git checkout must not fall
+    through to a real `git fetch`, which would just fail."""
+    not_a_checkout = tmp_path / "plain-dir"
+    not_a_checkout.mkdir()
+    reason = gh.sync(not_a_checkout)
+    assert "not a checkout" in reason
+    assert fake_bin.calls == []
+
+
 def test_pr_reviews_normalises_shape(fake_bin):
     payload = [
         {"id": "PRR_1", "user": {"login": "oplane-bot"}, "body": "b", "submitted_at": "t"},

@@ -47,6 +47,9 @@ def _items(findings: list[dict]) -> str:
     for index, finding in enumerate(findings, start=1):
         summary = (finding.get("summary") or "").strip()
         body = (finding.get("body") or "").strip()
+        # Known limitation: a finding with no `file` (e.g. from a source
+        # FILE_RE could not match) silently gets this placeholder rather than
+        # being flagged, so the effort prompt sees "unknown file" verbatim.
         path = finding.get("file") or "unknown file"
         lines.append(f"{index}. [{path}] {summary}\n{body}\n")
     return "\n".join(lines)

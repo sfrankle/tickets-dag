@@ -221,7 +221,7 @@ def _check_acyclic(steps: list[Step]) -> None:
         raise ConfigError(f"steps form a cycle in needs: {', '.join(stuck)}")
 
 
-def _load_reviews(raw_reviews: list) -> tuple[Review, ...]:
+def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review, ...]:
     reviews: list[Review] = []
     seen: set[str] = set()
     for raw in raw_reviews:
@@ -238,6 +238,10 @@ def _load_reviews(raw_reviews: list) -> tuple[Review, ...]:
             )
         if not raw.get("prompt"):
             raise ConfigError(f"review {review_id} has no prompt: (both transports need one)")
+        if dispatch == "local" and not (raw.get("model") or default_model):
+            raise ConfigError(
+                f"review {review_id} is dispatch: local with no model: and no defaults.model"
+            )
         reviews.append(
             Review(
                 id=review_id,
@@ -283,7 +287,7 @@ def load_config(path: Path | None = None) -> Config:
         models=models,
         default_model=default_model,
         steps=_load_steps(raw.get("steps") or [], default_model),
-        reviews=_load_reviews(raw.get("reviews") or []),
+        reviews=_load_reviews(raw.get("reviews") or [], default_model),
         repos=dict(raw.get("repos") or {}),
         worktrees=Worktrees(
             enabled=bool(wt.get("enabled", True)),

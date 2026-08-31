@@ -169,6 +169,25 @@ def test_effort_overrides(env, fake_bin, capsys):
     assert [f["effort"] for f in findings if f["id"] == "f02"] == ["easy"]
 
 
+def test_fix_without_wait_survives_a_missing_pr_document(env, fake_bin, capsys):
+    """cmd_fix must not crash reading `.get("head")` off a PR doc that has
+    not been written yet (no dispatch/collection has run), when --wait is
+    not requested — the head is only needed inside the --wait branch."""
+    from ticket.store import Store
+
+    started(fake_bin)
+    store = Store(env / "store")
+    ids = store.add_findings(
+        "acme/api#115",
+        [{"file": "a.py", "summary": "s", "severity": "maintenance", "effort": "easy"}],
+    )
+    finding_id = ids[0]
+    assert store.read_pr("acme/api#115") is None
+    assert main(["fix", "ABC-123", finding_id]) == 0
+    out = capsys.readouterr().out
+    assert f"{finding_id}:" in out
+
+
 def test_reset_clears_the_step_and_everything_below(env, fake_bin, capsys):
     started(fake_bin)
     main(["run", "describe", "ABC-123"])
@@ -208,6 +227,32 @@ def test_no_sync_skips_the_fetch(env, fake_bin):
     fake_bin.log.unlink()
     main(["--no-sync", "collect", "ABC-123"])
     assert not any("fetch" in " ".join(c) for c in fake_bin.calls_to("git"))
+
+
+def test_top_level_json_flag_before_the_verb_is_not_clobbered(env, fake_bin, capsys):
+    """`--json` parsed before the verb must survive: a subparser's own
+    `json=False` default must not overwrite it in the shared namespace."""
+    started(fake_bin)
+    capsys.readouterr()
+    assert main(["--json", "show", "ABC-123"]) == 0
+    out = capsys.readouterr().out
+    json.loads(out)  # would raise if it fell back to the plain-text renderer
+
+
+def test_no_sync_after_the_verb_also_skips_the_fetch(env, fake_bin):
+    started(fake_bin)
+    fake_bin.log.unlink()
+    main(["collect", "ABC-123", "--no-sync"])
+    assert not any("fetch" in " ".join(c) for c in fake_bin.calls_to("git"))
+
+
+def test_no_sync_does_not_leak_into_os_environ(env, fake_bin):
+    started(fake_bin)
+    import os
+
+    assert "TICKET_NO_SYNC" not in os.environ
+    main(["--no-sync", "collect", "ABC-123"])
+    assert "TICKET_NO_SYNC" not in os.environ
 
 
 def test_reset_without_force_asks_first(env, fake_bin, capsys, monkeypatch):
@@ -271,6 +316,21 @@ def test_open_uses_gh_web(env, fake_bin):
     started(fake_bin)
     main(["open", "ABC-123"])
     assert any("--web" in c for c in fake_bin.calls_to("gh"))
+
+
+def test_open_on_a_malformed_ref_is_a_clean_ticket_error(env, fake_bin, capsys):
+    """cmd_open must use gh.split_ref (the sole module that knows how to
+    split owner/repo#number) so a malformed ref raises GhError, not a bare
+    ValueError from a manual `.split("#")`."""
+    from ticket.store import Store
+
+    started(fake_bin)
+    store = Store(env / "store")
+    ticket = store.read_ticket("ABC-123")
+    ticket["prs"] = ["not-a-valid-ref"]
+    store.write_ticket(ticket)
+    assert main(["open", "ABC-123"]) == 1
+    assert "not owner/repo#number" in capsys.readouterr().err
 
 
 def test_pr_flag_picks_the_pr(env, fake_bin, capsys):

@@ -206,6 +206,15 @@ def test_duplicate_review_order_is_an_error(tmp_path):
         load_config(write(tmp_path, bad))
 
 
+def test_local_review_with_no_resolvable_model_is_an_error(tmp_path):
+    """Mirrors the handoff no-model check: a `dispatch: local` review with no
+    `model:` and no `defaults.model` must fail at load time, not mid-DAG."""
+    bad = SAMPLE.replace("    dispatch: local\n    model: opus\n", "    dispatch: local\n")
+    bad = bad.replace("defaults:\n  model: opus\n", "")
+    with pytest.raises(ConfigError, match="architecture"):
+        load_config(write(tmp_path, bad))
+
+
 def test_a_repo_skip_that_strands_a_dependent_is_an_error(tmp_path):
     """`repos.steps.skip` removes the step; `ticket skip` marks it satisfied."""
     bad = SAMPLE.replace("skip: [describe]", "skip: [review-spec]")

@@ -126,7 +126,7 @@ def test_dry_run_still_syncs_the_worktree(cfg, store, fake_bin, tmp_path):
     with a worktree present."""
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
+    (checkout / ".git").mkdir(parents=True)
     ticket = ticket_doc()
     ticket["worktree"] = str(checkout)
     dispatch(cfg, store, ticket, "acme/api#115", cfg.review("architecture"), dry_run=True)

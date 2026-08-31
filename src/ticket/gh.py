@@ -90,7 +90,7 @@ def sync(worktree: Path | None) -> str | None:
     if not worktree:
         return None
     path = Path(worktree)
-    if not (path / ".git").exists() and not path.is_dir():
+    if not (path / ".git").exists() or not path.is_dir():
         return f"{path} is not a checkout"
     try:
         run(["git", "fetch", "--prune", "--quiet"], cwd=path, retries=3)

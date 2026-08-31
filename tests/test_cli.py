@@ -55,6 +55,16 @@ def test_a_bare_key_shows_the_row(env, capsys):
     assert "evaluate" in out
 
 
+def test_track_rejects_a_key_that_is_not_a_valid_jira_key(env, capsys, tmp_path):
+    """`track` writes the key straight into a store path (`_ticket_file`)
+    with no sanitisation; a path-shaped key must be refused before any store
+    write rather than interpolated into a path."""
+    assert main(["track", "..-1", "--repo", "a/b"]) == 1
+    assert "not a valid Jira key" in capsys.readouterr().err
+    store = tmp_path / "store"
+    assert not any(store.rglob("*.json"))
+
+
 def test_an_unknown_key_is_an_error_not_a_traceback(env, capsys):
     assert main(["ABC-999"]) == 1
     assert "not tracked" in capsys.readouterr().err

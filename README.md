@@ -36,7 +36,9 @@ ticket release review-spec ABC-123
 ticket review ABC-123             # dispatch the next review
 ticket collect ABC-123            # ingest reviews and comments not yet seen
 ticket findings ABC-123
+ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
+ticket open ABC-123               # the PR in a browser
 ticket effort ABC-123 f02 hard     # override how a finding gets fixed
 ticket decide ABC-123 f03 "covered by ABC-140"
 ticket reset ABC-123 implement    # re-run a step and everything below it

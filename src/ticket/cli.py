@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import sys
@@ -44,11 +43,11 @@ class Context:
     store: Store
 
     @classmethod
-    def load(cls, repo: str | None = None) -> "Context":
+    def load(cls, repo: str | None = None, no_sync: bool = False) -> "Context":
         cfg = load_config()
         if repo:
             cfg = cfg.for_repo(repo)
-        if os.environ.get("TICKET_NO_SYNC"):
+        if no_sync:
             # `--no-sync` for the rare case of working offline; syncing is on by
             # default because the bot commits on the remote.
             cfg = replace_fields(cfg, sync=False)
@@ -157,8 +156,10 @@ def downstream(cfg: Config, step_id: str) -> list[str]:
 
 
 def cmd_track(args) -> int:
-    ctx = Context.load()
     key = args.key
+    if not KEY_RE.match(key):
+        raise TicketError(f"{key!r} is not a valid Jira key (expected e.g. ABC-123)")
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = ctx.store.read_ticket(key) or {"key": key, "prs": [], "steps": {}}
     ticket["repo"] = args.repo
     ticket["tracked"] = True
@@ -169,11 +170,11 @@ def cmd_track(args) -> int:
 
 
 def cmd_show(args) -> int:
-    return print_row(Context.load(), args.key, args.json)
+    return print_row(Context.load(no_sync=getattr(args, "no_sync", False)), args.key, args.json)
 
 
 def cmd_queue(args) -> int:
-    return print_queue(Context.load(), args.json)
+    return print_queue(Context.load(no_sync=getattr(args, "no_sync", False)), args.json)
 
 
 def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
@@ -215,7 +216,7 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
 
 
 def cmd_next(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     action = resolve_for(inner, ticket)
@@ -223,7 +224,7 @@ def cmd_next(args) -> int:
 
 
 def cmd_run(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     step = inner.cfg.step(args.step)
@@ -241,7 +242,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_skip(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     known_steps = {s.id for s in inner.cfg.steps}
@@ -274,7 +275,7 @@ def cmd_skip(args) -> int:
 
 
 def cmd_release(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     step = inner.cfg.step(args.step)
@@ -289,7 +290,7 @@ def cmd_release(args) -> int:
 
 
 def cmd_review(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
@@ -308,7 +309,7 @@ def cmd_review(args) -> int:
 
 
 def cmd_collect(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
@@ -325,7 +326,7 @@ def cmd_collect(args) -> int:
 
 
 def cmd_fix(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
@@ -339,7 +340,10 @@ def cmd_fix(args) -> int:
         targets = [action.target]
 
     for finding_id in targets:
-        before = inner.store.read_pr(pr_ref).get("head")
+        before = None
+        if args.wait:
+            pr_before = inner.store.read_pr(pr_ref)
+            before = pr_before.get("head") if pr_before else None
         status = fix_module.fix_one(
             inner.cfg, inner.store, ticket, pr_ref, finding_id, dry_run=args.dry_run
         )
@@ -356,7 +360,7 @@ def cmd_fix(args) -> int:
 
 
 def cmd_decide(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     if args.dry_run:
         print(f"[dry-run] would close {args.finding} as wontfix")
@@ -367,7 +371,7 @@ def cmd_decide(args) -> int:
 
 
 def cmd_effort(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     if args.dry_run:
         print(f"[dry-run] would set {args.finding} to {args.value}")
@@ -378,7 +382,7 @@ def cmd_effort(args) -> int:
 
 
 def cmd_findings(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     doc = ctx.store.read_findings(pick_pr(ticket, args))
     if args.json:
@@ -400,7 +404,7 @@ def cmd_findings(args) -> int:
 
 
 def cmd_reviews(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
@@ -429,13 +433,13 @@ def cmd_reviews(args) -> int:
 
 
 def cmd_open(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     prs = ticket.get("prs") or []
     if not prs:
         print(f"{args.key} has no PR yet")
         return 0
-    repo, number = prs[-1].split("#")
+    repo, number = gh.split_ref(prs[-1])
     gh.run(["gh", "pr", "view", number, "--repo", repo, "--web"], retries=1)
     return 0
 
@@ -467,7 +471,7 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
 
 
 def cmd_refresh(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     if args.key:
         _refresh_one(ctx, load_ticket(ctx, args.key), dry_run=args.dry_run)
         print(f"refreshed {args.key}")
@@ -480,7 +484,7 @@ def cmd_refresh(args) -> int:
 
 
 def cmd_reset(args) -> int:
-    ctx = Context.load()
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     affected = downstream(inner.cfg, args.step) if args.step else [s.id for s in inner.cfg.steps]
@@ -523,17 +527,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add(name, func, **kwargs):
         p = sub.add_parser(name, **kwargs)
-        p.set_defaults(func=func, json=False, dry_run=False)
+        p.set_defaults(func=func, dry_run=False)
         # default=SUPPRESS: a subparser's own copy of this flag must not clobber
-        # a `--no-sync` already parsed before the verb (argparse applies each
-        # parser's defaults into the shared namespace, so a plain default=False
-        # here would silently override `ticket --no-sync collect ...`).
+        # a `--no-sync` (or `--json`) already parsed before the verb (argparse
+        # applies each parser's defaults into the shared namespace, so a plain
+        # default=False here would silently override `ticket --no-sync collect
+        # ...` or `ticket --json show ABC-1`).
         p.add_argument("--no-sync", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         return p
 
     p = add("show", cmd_show, help="show one ticket")
     p.add_argument("key")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     p = add("track", cmd_track, help="start driving an untracked row")
     p.add_argument("key")
@@ -594,12 +599,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("findings", cmd_findings, help="findings grouped by status, then severity")
     p.add_argument("key")
     p.add_argument("--pr")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     p = add("reviews", cmd_reviews, help="every review on the PR, ours and theirs")
     p.add_argument("key")
     p.add_argument("--pr")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     p = add("open", cmd_open, help="the PR in a browser")
     p.add_argument("key")
@@ -628,8 +633,6 @@ def main(argv: list[str] | None = None) -> int:
         # argparse exits rather than returning. main() is the process's return
         # code and is called directly by the tests, so turn it back into one.
         return int(exc.code or 0)
-    if getattr(args, "no_sync", False):
-        os.environ["TICKET_NO_SYNC"] = "1"
     try:
         key = getattr(args, "key", None)
         if args.verb in WRITE_VERBS and key and not getattr(args, "dry_run", False):

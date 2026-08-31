@@ -9,13 +9,13 @@ tracked fully; they are simply not in the config.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from pathlib import Path
 
 from . import gh
 from .effort import assign_effort
 from .config import Config
 from .parse import parse_haiku, parse_script
+from .resolve import _uncollected as next_uncollected
 from .reviews import ensure_pr
 from .store import Store, now
 
@@ -27,32 +27,23 @@ def _is_our_dispatch_comment(body: str) -> bool:
     return bool(DISPATCH_RE.match(body.lstrip()))
 
 
-def next_uncollected(pr: dict) -> str | None:
-    """The earliest review we dispatched that has no result recorded yet.
-
-    Counted, not set-compared: a review re-dispatched after the head moved is
-    uncollected again until a further result has been recorded for it.
-    """
-    collected = Counter(c["review"] for c in pr.get("collected") or [] if c.get("review"))
-    seen: Counter = Counter()
-    for dispatch in pr.get("dispatched") or []:
-        review = dispatch.get("review")
-        if not review:
-            continue
-        seen[review] += 1
-        if seen[review] > collected[review]:
-            return review
-    return None
-
-
 def _fingerprint(finding: dict) -> tuple[str, str]:
     return (finding.get("file") or "", (finding.get("summary") or "").strip())
 
 
 def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[dict]:
     """oplane-bot posts on every push and a re-run review repeats its unfixed
-    items, so the same finding arrives again under a new source id."""
-    known = {_fingerprint(f) for f in store.read_findings(pr_ref)["findings"]}
+    items, so the same finding arrives again under a new source id.
+
+    Only findings still `open` count toward the fingerprint set: a finding
+    that was resolved or marked wontfix and then re-raised (because the fix
+    was actually wrong) must get a fresh entry rather than being silently
+    dropped as a duplicate."""
+    known = {
+        _fingerprint(f)
+        for f in store.read_findings(pr_ref)["findings"]
+        if f.get("status") == "open"
+    }
     fresh = []
     for finding in findings:
         mark = _fingerprint(finding)
