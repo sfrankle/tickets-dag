@@ -1,0 +1,1 @@
+- DO NOT use claude memory - take notes in .claude/notes/ (gitignored)
