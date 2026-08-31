@@ -1,7 +1,7 @@
 """Fetch reviews and comments from gh, dedupe, hand bodies to the parser.
 
 Dedupe is on the GitHub review/comment id, so collection is idempotent and safe
-to run repeatedly. Sources we did not dispatch — humans, oplane-bot, other
+to run repeatedly. Sources we did not dispatch — humans, review-bot, other
 required agents — are recorded with `review: null` and an author. They are
 tracked fully; they are simply not in the config.
 """
@@ -32,7 +32,7 @@ def _fingerprint(finding: dict) -> tuple[str, str]:
 
 
 def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[dict]:
-    """oplane-bot posts on every push and a re-run review repeats its unfixed
+    """review-bot posts on every push and a re-run review repeats its unfixed
     items, so the same finding arrives again under a new source id.
 
     Only findings still `open` count toward the fingerprint set: a finding

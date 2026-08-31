@@ -75,8 +75,8 @@ def test_script_returns_none_for_a_human_comment():
     assert parse_script(body("human-comment.md")) is None
 
 
-def test_script_returns_none_for_oplane_bot():
-    assert parse_script(body("oplane-bot.md")) is None
+def test_script_returns_none_for_a_foreign_bot():
+    assert parse_script(body("review-bot.md")) is None
 
 
 def test_script_never_sets_effort():

@@ -57,14 +57,51 @@ def test_a_bare_key_shows_the_row(env, capsys):
     assert "evaluate" in out
 
 
-def test_track_rejects_a_key_that_is_not_a_valid_jira_key(env, capsys, tmp_path):
+@pytest.mark.parametrize("key", ["..", "../etc", "a/b", "a\\b", " ", "a b"])
+def test_track_rejects_a_key_that_is_not_a_safe_path_segment(
+    env, capsys, tmp_path, key
+):
     """`track` writes the key straight into a store path (`_ticket_file`)
     with no sanitisation; a path-shaped key must be refused before any store
     write rather than interpolated into a path."""
-    assert main(["track", "..-1", "--repo", "a/b"]) == 1
-    assert "not a valid Jira key" in capsys.readouterr().err
+    assert main(["track", key, "--repo", "a/b"]) == 1
+    assert "not a usable ticket key" in capsys.readouterr().err
     store = tmp_path / "store"
     assert not any(store.rglob("*.json"))
+
+
+def test_track_rejects_a_dash_leading_key_before_it_reaches_the_store(
+    env, capsys, tmp_path
+):
+    """argparse claims it as a flag, which is refusal enough — what matters is
+    that nothing is written."""
+    assert main(["track", "-x", "--repo", "a/b"]) != 0
+    assert not any((tmp_path / "store").rglob("*.json"))
+
+
+@pytest.mark.parametrize("key", ["ABC-123", "123", "eng_14", "add-tracker-block"])
+def test_track_accepts_any_key_shape_the_tracker_uses(env, capsys, tmp_path, key):
+    """The tool has no opinion on key shape; a shop that wants one sets
+    `key_pattern:`."""
+    assert main(["track", key, "--repo", "a/b"]) == 0
+
+
+def test_track_enforces_key_pattern_when_the_config_sets_one(env, capsys, tmp_path):
+    config = tmp_path / "config.yml"
+    config.write_text(config.read_text() + '\nkey_pattern: "^[A-Z]+-[0-9]+$"\n')
+    assert main(["track", "eng_14", "--repo", "a/b"]) == 1
+    err = capsys.readouterr().err
+    assert "key_pattern" in err and "^[A-Z]+-[0-9]+$" in err
+    assert main(["track", "ABC-123", "--repo", "a/b"]) == 0
+
+
+def test_a_bare_key_still_shows_the_ticket_but_a_verb_never_does(env, capsys):
+    """`main` rewrites a bare key to `show <key>`. With loose keys that rule
+    must not swallow a verb: `refresh` is a verb, not a ticket named refresh."""
+    main(["track", "refresh", "--repo", "a/b"])
+    capsys.readouterr()
+    assert main(["refresh"]) == 0
+    assert "evaluate" not in capsys.readouterr().out
 
 
 def test_an_unknown_key_is_an_error_not_a_traceback(env, capsys):

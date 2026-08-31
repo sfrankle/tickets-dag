@@ -108,7 +108,7 @@ def test_pr_reviews_normalises_shape(fake_bin):
     payload = [
         {
             "id": "PRR_1",
-            "user": {"login": "oplane-bot"},
+            "user": {"login": "review-bot"},
             "body": "b",
             "submitted_at": "t",
         },
@@ -117,7 +117,7 @@ def test_pr_reviews_normalises_shape(fake_bin):
         "gh api repos/acme/api/pulls/115/reviews", stdout=json.dumps(payload)
     )
     assert gh.pr_reviews("acme/api#115") == [
-        {"id": "PRR_1", "author": "oplane-bot", "body": "b", "submitted_at": "t"}
+        {"id": "PRR_1", "author": "review-bot", "body": "b", "submitted_at": "t"}
     ]
 
 

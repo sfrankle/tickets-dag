@@ -1,6 +1,8 @@
-Review this PR for documentation and test coverage only.
+Review this PR for correctness only: logic that does not do what the surrounding
+code claims, unhandled error paths, state that can go stale, and behaviour
+changed without a test.
 
-Look for: claims in docs the code contradicts, documented flags or options that no longer exist, behaviour changed without a test, tests that assert the implementation rather than the behaviour.
+Ignore style and naming. Ignore anything another review in this config covers.
 
 Report in exactly this format:
 

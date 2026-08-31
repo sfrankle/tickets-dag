@@ -1,4 +1,4 @@
-Read Jira ticket $TICKET_KEY. Decide whether it is ready to work.
+Read ticket $TICKET_KEY in whichever tracker this project uses. Decide whether it is ready to work.
 
 Report, in this order:
 1. What the ticket is actually asking for, in one sentence.

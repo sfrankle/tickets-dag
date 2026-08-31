@@ -26,7 +26,21 @@ from .errors import TicketError
 from .resolve import Action, active_pr, next_action, open_findings
 from .store import Store, now
 
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
+# A key is not just a label: it is a store filename, a lock filename, a log
+# directory and a worktree directory. The engine therefore checks only that it
+# is a safe single path segment and leaves shape to `key_pattern:` in config —
+# tickets come from Jira, Linear, GitHub issues or nothing at all.
+UNSAFE_KEY_RE = re.compile(r"[\s/\\]")
+
+
+def is_safe_key(key: str) -> bool:
+    return bool(
+        key
+        and not UNSAFE_KEY_RE.search(key)
+        and not key.startswith("-")
+        and key not in (".", "..")
+    )
+
 
 # Verbs that change something. `main` takes the per-ticket advisory lock around
 # these, and only these, so two runs on one ticket cannot interleave writes.
@@ -174,10 +188,11 @@ def downstream(cfg: Config, step_id: str) -> list[str]:
 
 
 def cmd_track(args) -> int:
-    key = args.key
-    if not KEY_RE.match(key):
-        raise TicketError(f"{key!r} is not a valid Jira key (expected e.g. ABC-123)")
+    key = args.key  # `main` has already refused a key that is not path-safe
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+    pattern = ctx.cfg.key_pattern
+    if pattern and not re.match(pattern, key):
+        raise TicketError(f"{key!r} does not match key_pattern {pattern!r}")
     ticket = ctx.store.read_ticket(key) or {"key": key, "prs": [], "steps": {}}
     ticket["repo"] = args.repo
     ticket["tracked"] = True
@@ -543,13 +558,15 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
             print(f"[dry-run] would write pr {pr_ref} (head {pr['head']})")
         else:
             ctx.store.write_pr(pr)
-    if shutil.which("jira"):
+    argv = ctx.cfg.tracker.summary_argv(ticket["key"])
+    # No tracker configured, or one whose CLI is not installed on this machine,
+    # is the ordinary case rather than an error: the summary is a convenience
+    # and the rest of refresh is the point.
+    if argv and shutil.which(argv[0]):
         if dry_run:
-            print(f"[dry-run] would refresh {ticket['key']} summary from jira")
+            print(f"[dry-run] would refresh {ticket['key']} summary from {argv[0]}")
         else:
-            summary = gh.run(
-                ["jira", "issue", "view", ticket["key"], "--plain"], retries=1
-            )
+            summary = gh.run(argv, retries=1)
             ticket["summary"] = (
                 summary.strip().splitlines()[0] if summary.strip() else ""
             )
@@ -608,6 +625,9 @@ def cmd_reset(args) -> int:
 # --- parser ---------------------------------------------------------------
 
 
+VERBS: set[str] = set()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ticket")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -620,6 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="verb")
 
     def add(name, func, **kwargs):
+        VERBS.add(name)
         p = sub.add_parser(name, **kwargs)
         p.set_defaults(func=func, dry_run=False)
         # default=SUPPRESS: a subparser's own copy of this flag must not clobber
@@ -713,7 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("open", cmd_open, help="the PR in a browser")
     p.add_argument("key")
 
-    p = add("refresh", cmd_refresh, help="refresh gh and Jira state")
+    p = add("refresh", cmd_refresh, help="refresh gh and tracker state")
     p.add_argument("key", nargs="?")
     p.add_argument("--dry-run", action="store_true")
 
@@ -728,9 +749,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and KEY_RE.match(argv[0]):
-        argv = ["show", *argv]
     parser = build_parser()
+    # A bare key means `show`. Keys are loose enough to look like words now, so
+    # a verb always wins the ambiguity — `ticket refresh` is the verb even for
+    # someone with a ticket keyed `refresh`, who can still say `ticket show
+    # refresh`.
+    if argv and argv[0] not in VERBS and is_safe_key(argv[0]):
+        argv = ["show", *argv]
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -739,6 +764,14 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         key = getattr(args, "key", None)
+        # Before anything interpolates the key into a path — the lock below
+        # does it first, ahead of any command's own validation.
+        if key and not is_safe_key(key):
+            raise TicketError(
+                f"{key!r} is not a usable ticket key: it becomes a file and a "
+                f"directory name, so it cannot be empty, contain whitespace or "
+                f"a path separator, or start with '-'."
+            )
         if args.verb in WRITE_VERBS and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
             with store.lock(key):

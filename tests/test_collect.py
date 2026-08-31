@@ -124,10 +124,10 @@ def test_a_review_we_did_not_dispatch_is_recorded_with_a_null_review(
     cfg, store, fake_bin
 ):
     seeded_pr(store)
-    body = (FIXTURES / "oplane-bot.md").read_text()
+    body = (FIXTURES / "review-bot.md").read_text()
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
-        stdout=review_payload(body, author="oplane-bot", review_id="PRR_9"),
+        stdout=review_payload(body, author="review-bot", review_id="PRR_9"),
     )
     fake_bin.respond(
         "claude",
@@ -144,7 +144,7 @@ def test_a_review_we_did_not_dispatch_is_recorded_with_a_null_review(
     )
     records = collect(cfg, store, ticket_doc(), "acme/api#115")
     assert records[0]["review"] is None
-    assert records[0]["author"] == "oplane-bot"
+    assert records[0]["author"] == "review-bot"
 
 
 def test_issue_comments_are_collected_too(cfg, store, fake_bin):
@@ -235,7 +235,7 @@ def test_dry_run_writes_nothing_and_spends_no_tokens(cfg, store, fake_bin):
 
 
 def test_the_same_finding_arriving_twice_is_minted_once(cfg, store, fake_bin):
-    """oplane-bot posts on every push; a re-run review repeats unfixed items."""
+    """review-bot posts on every push; a re-run review repeats unfixed items."""
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
     fake_bin.respond(

@@ -8,6 +8,7 @@ overrides under `repos:`, never separate files. Overrides are shallow:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -88,6 +89,21 @@ class Fix:
 
 
 @dataclass(frozen=True)
+class Tracker:
+    """How to ask an external tracker for a ticket's summary, if at all.
+
+    One command, not an integration. The tool never learns what a tracker is:
+    it runs the argv it is given, substitutes `{key}`, and keeps the first line
+    of stdout. Unset means the summary is whatever `ticket track` recorded.
+    """
+
+    summary: tuple[str, ...] = ()
+
+    def summary_argv(self, key: str) -> list[str]:
+        return [part.format(key=key) for part in self.summary]
+
+
+@dataclass(frozen=True)
 class Config:
     store: Path  # where state lives; defaults to `root` (decision #24)
     root: Path  # the config file's directory; every relative path anchors here
@@ -99,6 +115,8 @@ class Config:
     worktrees: Worktrees
     sync: bool
     fix: Fix = Fix()
+    tracker: Tracker = Tracker()
+    key_pattern: str | None = None
 
     def model_id(self, alias: str) -> str:
         try:
@@ -291,6 +309,39 @@ def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
     return Fix(model=model, args=tuple(raw.get("args") or ()))
 
 
+def _load_key_pattern(raw) -> str | None:
+    """Optional house style for ticket keys, e.g. `^[A-Z]+-[0-9]+$`.
+
+    The engine's own check is a path-safety one (see `cli.is_safe_key`); this
+    is the stricter, entirely local opinion a shop with one tracker can add.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ConfigError("key_pattern must be a regex string")
+    try:
+        re.compile(raw)
+    except re.error as exc:
+        raise ConfigError(f"key_pattern is not a valid regex: {exc}") from exc
+    return raw
+
+
+def _load_tracker(raw) -> Tracker:
+    if not raw:
+        return Tracker()
+    if not isinstance(raw, dict):
+        raise ConfigError("tracker: must be a mapping with summary:")
+    summary = raw.get("summary")
+    if summary is None:
+        return Tracker()
+    if not isinstance(summary, list) or not summary:
+        raise ConfigError(
+            "tracker.summary must be a non-empty list of argv parts, "
+            'e.g. [jira, issue, view, "{key}", --plain]'
+        )
+    return Tracker(summary=tuple(str(part) for part in summary))
+
+
 def load_config(path: Path | None = None) -> Config:
     path = (path or config_path()).expanduser()
     if not path.is_file():
@@ -335,6 +386,8 @@ def load_config(path: Path | None = None) -> Config:
         ),
         sync=bool(raw.get("sync", True)),
         fix=_load_fix(raw.get("fix") or {}, default_model, models),
+        tracker=_load_tracker(raw.get("tracker")),
+        key_pattern=_load_key_pattern(raw.get("key_pattern")),
     )
     # Validate every repo override eagerly, not just the ones a given run
     # happens to call `for_repo` on: a bad repos: entry should fail at load

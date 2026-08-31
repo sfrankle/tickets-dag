@@ -1,6 +1,6 @@
 # tickets-dag
 
-A lightweight, config-driven DAG for driving a Jira ticket to a merged PR.
+A lightweight, config-driven DAG for driving a tracker ticket to a merged PR.
 Steps and reviews live in YAML; the CLI verb set does not grow when they do.
 
 ## Install
@@ -79,6 +79,42 @@ can be a one-line fix. Effort is set by Haiku at ingestion and overridden with
 fix runs is configured under `fix:` — `model:` (defaults to `defaults.model`)
 and `args:`, which is where agent mode goes. Without it the session can read
 but not write, and every hard fix ends in "changed nothing".
+
+**The review format is the tool's contract.** A review this tool dispatches is
+expected to answer in one `<details>` block per severity — keyed by 🔴, 🟡 or 🔵
+in the `<summary>` — with each finding a top-level `*` bullet naming its file in
+backticks, `None.` in an empty block, and a closing `**Verdict:**` line. That
+shape parses to findings for free. Anything else — a human comment, a bot whose
+output you do not control, format drift — is split into findings by Haiku
+instead, so nothing is lost by a reviewer that will not conform. The example
+review prompts under `examples/prompts/reviews/` state the format in full, and
+each one states it on its own: a `bot` review is posted as a PR comment and a
+`local` review runs in the ticket's checkout, so neither can read a sibling
+prompt file.
+
+**GitHub is a contract, the tracker is not.** PRs, reviews and comments go
+through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review`
+and `/edit` comment protocol; there is no forge abstraction and none is
+planned. The tracker is the other way round — the engine never learns what one
+is. Set `tracker.summary` to an argv list and `refresh` runs it, substitutes
+`{key}`, and keeps the first line of stdout as the summary:
+
+```yaml
+tracker:
+  summary: [jira, issue, view, "{key}", --plain]
+```
+
+Leave it out and there is no lookup. A command whose binary is missing is
+skipped the same way — the summary is a convenience, and the rest of `refresh`
+still has to work.
+
+**A key is a path.** It becomes a state file, a lock file, a log directory and
+a worktree directory, so the only shape the engine enforces is one safe path
+segment: no whitespace, no separator, no leading `-`. `ABC-123`, `4471` and
+`add-tracker-block` are all keys. Set `key_pattern:` to a regex if you want the
+stricter rule your tracker implies. A bare key is shorthand for `show`, and a
+verb always wins that ambiguity — `ticket refresh` is the verb even if you have
+a ticket keyed `refresh`.
 
 Resolution is a `git log` scan for `Finding: fNN` trailers — one commit per
 finding, zero tokens, and it works for the bot's commits too.

@@ -274,3 +274,42 @@ def test_repo_path_is_read_from_the_repo_override(tmp_path):
 
 def test_sync_defaults_on(tmp_path):
     assert load_config(write(tmp_path, SAMPLE)).sync is True
+
+
+def test_tracker_defaults_to_no_lookup(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert cfg.tracker.summary == ()
+
+
+def test_tracker_summary_is_an_argv_list_with_the_key_left_to_substitute(tmp_path):
+    text = SAMPLE + textwrap.dedent("""
+        tracker:
+          summary: [jira, issue, view, "{key}", --plain]
+    """)
+    cfg = load_config(write(tmp_path, text))
+    assert cfg.tracker.summary == ("jira", "issue", "view", "{key}", "--plain")
+    assert cfg.tracker.summary_argv("ABC-123") == [
+        "jira",
+        "issue",
+        "view",
+        "ABC-123",
+        "--plain",
+    ]
+
+
+def test_tracker_summary_must_be_a_list(tmp_path):
+    text = SAMPLE + '\ntracker:\n  summary: "jira issue view {key}"\n'
+    with pytest.raises(ConfigError, match=r"tracker\.summary"):
+        load_config(write(tmp_path, text))
+
+
+def test_tracker_summary_rejects_an_empty_list(tmp_path):
+    text = SAMPLE + "\ntracker:\n  summary: []\n"
+    with pytest.raises(ConfigError, match=r"tracker\.summary"):
+        load_config(write(tmp_path, text))
+
+
+def test_tracker_must_be_a_mapping(tmp_path):
+    text = SAMPLE + "\ntracker: jira\n"
+    with pytest.raises(ConfigError, match="tracker:"):
+        load_config(write(tmp_path, text))

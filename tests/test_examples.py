@@ -8,7 +8,7 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 def test_example_config_loads():
     cfg = load_config(EXAMPLES / "config.yml")
     assert next(s.id for s in cfg.steps) == "evaluate"
-    assert [r.id for r in cfg.reviews] == ["docs-tests", "architecture", "security"]
+    assert [r.id for r in cfg.reviews] == ["correctness", "security"]
 
 
 def test_every_example_prompt_referenced_by_the_config_exists():
@@ -24,7 +24,7 @@ def test_every_example_prompt_referenced_by_the_config_exists():
 
 def test_example_repo_overrides_resolve():
     cfg = load_config(EXAMPLES / "config.yml")
-    assert [r.id for r in cfg.for_repo("acme/api").reviews] == ["docs-tests"]
+    assert [r.id for r in cfg.for_repo("acme/api").reviews] == ["correctness"]
     assert "describe" not in [s.id for s in cfg.for_repo("acme/infra").steps]
 
 
@@ -54,8 +54,17 @@ def test_the_worktree_script_honours_the_worktree_setting():
 
 
 def test_every_review_prompt_states_the_output_format():
+    """Self-contained, every one of them.
+
+    A `bot` review is posted as a PR comment and a `local` review runs in the
+    ticket's checkout, so a prompt that points at a sibling file ships a
+    reference the reviewer cannot resolve.
+    """
     cfg = load_config(EXAMPLES / "config.yml")
     for review in cfg.reviews:
         text = cfg.path_to(review.prompt).read_text()
         assert "**Verdict:**" in text, review.id
         assert "importance, not effort" in text, review.id
+        for severity in ("🔴", "🟡", "🔵"):
+            assert severity in text, review.id
+        assert "prompts/reviews/" not in text, review.id

@@ -251,14 +251,14 @@ def test_a_skipped_review_is_walked_past(cfg):
 
 
 def test_a_collected_review_we_never_dispatched_does_not_count_as_ours(cfg):
-    """oplane-bot is a source of findings, not one of our reviews."""
+    """review-bot is a source of findings, not one of our reviews."""
     ticket = ticket_doc(post_pr(), prs=["acme/api#115"])
     pr = pr_doc(
         collected=[
             {
                 "source_id": "IC_1",
                 "review": None,
-                "author": "oplane-bot",
+                "author": "review-bot",
                 "findings": [],
             }
         ]

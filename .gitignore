@@ -219,3 +219,6 @@ __marimo__/
 
 # superpowers scratch
 .superpowers/
+
+# Local design notes, per .claude/CLAUDE.md
+.claude/notes/
