@@ -46,7 +46,10 @@ def worktree(tmp_path):
     """A real git repo — trailer scanning is the one place we need real git."""
     path = tmp_path / "checkout"
     path.mkdir()
-    run = lambda *a: subprocess.run(a, cwd=path, check=True, capture_output=True)
+
+    def run(*a):
+        return subprocess.run(a, cwd=path, check=True, capture_output=True)
+
     run("git", "init", "-q")
     run("git", "config", "user.email", "t@example.com")
     run("git", "config", "user.name", "t")
@@ -64,10 +67,16 @@ def ticket_doc(worktree=None):
 
 
 def seed(store, *findings):
-    store.write_pr({
-        "pr": "acme/api#115", "key": "ABC-123", "head": "aaa",
-        "dispatched": [], "collected": [], "skipped": [],
-    })
+    store.write_pr(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "head": "aaa",
+            "dispatched": [],
+            "collected": [],
+            "skipped": [],
+        }
+    )
     store.add_findings("acme/api#115", list(findings))
 
 
@@ -76,9 +85,14 @@ def test_trailer_shape():
 
 
 def test_edit_body_names_the_finding_and_demands_the_trailer():
-    body = edit_body({"id": "f07", "summary": "README names a removed flag",
-                      "body": "the install section still names --legacy",
-                      "file": "README.md"})
+    body = edit_body(
+        {
+            "id": "f07",
+            "summary": "README names a removed flag",
+            "body": "the install section still names --legacy",
+            "file": "README.md",
+        }
+    )
     assert body.startswith("/edit")
     assert "README.md" in body
     assert "Finding: f07" in body
@@ -86,8 +100,19 @@ def test_edit_body_names_the_finding_and_demands_the_trailer():
 
 def test_scan_trailers_finds_a_commit(worktree):
     subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "fix: wording", "-m", "Finding: f07"],
-        cwd=worktree, check=True, capture_output=True,
+        [
+            "git",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: wording",
+            "-m",
+            "Finding: f07",
+        ],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
     )
     found = scan_trailers(worktree)
     assert "f07" in found
@@ -97,7 +122,9 @@ def test_scan_trailers_finds_a_commit(worktree):
 def test_scan_trailers_ignores_commits_without_one(worktree):
     subprocess.run(
         ["git", "commit", "-q", "--allow-empty", "-m", "chore: nothing"],
-        cwd=worktree, check=True, capture_output=True,
+        cwd=worktree,
+        check=True,
+        capture_output=True,
     )
     assert scan_trailers(worktree) == {}
 
@@ -106,18 +133,48 @@ def test_scan_trailers_newest_commit_wins(worktree):
     """When two commits carry the same finding trailer, `git log`'s
     combined-revision ordering means the newest one wins."""
     subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "fix: first attempt", "-m", "Finding: f01"],
-        cwd=worktree, check=True, capture_output=True,
+        [
+            "git",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: first attempt",
+            "-m",
+            "Finding: f01",
+        ],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
     )
     older = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "fix: better attempt", "-m", "Finding: f01"],
-        cwd=worktree, check=True, capture_output=True,
+        [
+            "git",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fix: better attempt",
+            "-m",
+            "Finding: f01",
+        ],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
     )
     newer = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     found = scan_trailers(worktree)
     assert found["f01"] == newer
@@ -128,7 +185,9 @@ def test_resolve_from_git_marks_findings_resolved(cfg, store, worktree):
     seed(store, {"summary": "a", "effort": "easy"})
     subprocess.run(
         ["git", "commit", "-q", "--allow-empty", "-m", "fix: a", "-m", "Finding: f01"],
-        cwd=worktree, check=True, capture_output=True,
+        cwd=worktree,
+        check=True,
+        capture_output=True,
     )
     closed = resolve_from_git(cfg, store, ticket_doc(worktree), "acme/api#115")
     assert closed == ["f01"]
@@ -155,19 +214,33 @@ def test_wait_for_head_gives_up_after_its_attempts(fake_bin):
 
 
 def test_easy_finding_goes_to_the_bot(cfg, store, worktree, fake_bin):
-    seed(store, {"summary": "README names a removed flag", "effort": "easy", "file": "README.md"})
+    seed(
+        store,
+        {
+            "summary": "README names a removed flag",
+            "effort": "easy",
+            "file": "README.md",
+        },
+    )
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "bbb"}))
     fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
-    comment = [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]][0]
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
     assert "/edit" in " ".join(comment)
     assert fake_bin.calls_to("claude") == []
 
 
 def test_hard_finding_runs_a_local_session_and_commits(cfg, store, worktree, fake_bin):
-    seed(store, {"summary": "retry loop unbounded", "effort": "hard", "file": "src/api/retry.py"})
+    seed(
+        store,
+        {
+            "summary": "retry loop unbounded",
+            "effort": "hard",
+            "file": "src/api/retry.py",
+        },
+    )
     fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
     assert fake_bin.calls_to("claude")
-    commit = [c for c in fake_bin.calls_to("git") if c[1] == "commit"][0]
+    commit = next(c for c in fake_bin.calls_to("git") if c[1] == "commit")
     assert "Finding: f01" in " ".join(commit)
 
 
@@ -185,10 +258,14 @@ def test_a_hard_fix_refuses_a_dirty_tree(cfg, store, worktree, fake_bin):
         fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
 
 
-def test_a_hard_fix_that_changes_nothing_is_reported_not_crashed(cfg, store, worktree, fake_bin):
+def test_a_hard_fix_that_changes_nothing_is_reported_not_crashed(
+    cfg, store, worktree, fake_bin
+):
     """An empty `git commit` exits non-zero. That is an answer, not a crash."""
     seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
-    fake_bin.respond("git commit", exit_code=1, stderr="nothing to commit, working tree clean")
+    fake_bin.respond(
+        "git commit", exit_code=1, stderr="nothing to commit, working tree clean"
+    )
     assert fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01") == "open"
 
 

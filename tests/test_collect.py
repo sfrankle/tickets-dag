@@ -38,28 +38,44 @@ def ticket_doc():
 
 
 def seeded_pr(store):
-    store.write_pr({
-        "pr": "acme/api#115",
-        "key": "ABC-123",
-        "head": "9c1f0ab",
-        "dispatched": [
-            {"review": "docs-tests", "at": "t", "head": "9c1f0ab", "transport": "bot"}
-        ],
-        "collected": [],
-        "skipped": [],
-    })
+    store.write_pr(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "head": "9c1f0ab",
+            "dispatched": [
+                {
+                    "review": "docs-tests",
+                    "at": "t",
+                    "head": "9c1f0ab",
+                    "transport": "bot",
+                }
+            ],
+            "collected": [],
+            "skipped": [],
+        }
+    )
 
 
 def review_payload(body, author="claude-review-bot", review_id="PRR_1"):
-    return json.dumps([
-        {"id": review_id, "user": {"login": author}, "body": body, "submitted_at": "t"}
-    ])
+    return json.dumps(
+        [
+            {
+                "id": review_id,
+                "user": {"login": author},
+                "body": body,
+                "submitted_at": "t",
+            }
+        ]
+    )
 
 
 def test_collect_ingests_a_dispatched_review(cfg, store, fake_bin):
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     records = collect(cfg, store, ticket_doc(), "acme/api#115")
     assert records[0]["review"] == "docs-tests"
@@ -69,7 +85,9 @@ def test_collect_ingests_a_dispatched_review(cfg, store, fake_bin):
 def test_collected_findings_get_an_effort(cfg, store, fake_bin):
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     collect(cfg, store, ticket_doc(), "acme/api#115")
     efforts = [f["effort"] for f in store.read_findings("acme/api#115")["findings"]]
@@ -79,7 +97,9 @@ def test_collected_findings_get_an_effort(cfg, store, fake_bin):
 def test_collect_records_the_source_on_each_finding(cfg, store, fake_bin):
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     collect(cfg, store, ticket_doc(), "acme/api#115")
     source = store.read_findings("acme/api#115")["findings"][0]["source"]
@@ -89,7 +109,9 @@ def test_collect_records_the_source_on_each_finding(cfg, store, fake_bin):
 def test_collect_is_idempotent(cfg, store, fake_bin):
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     ticket = ticket_doc()
     collect(cfg, store, ticket, "acme/api#115")
@@ -98,17 +120,28 @@ def test_collect_is_idempotent(cfg, store, fake_bin):
     assert len(store.read_findings("acme/api#115")["findings"]) == 3
 
 
-def test_a_review_we_did_not_dispatch_is_recorded_with_a_null_review(cfg, store, fake_bin):
+def test_a_review_we_did_not_dispatch_is_recorded_with_a_null_review(
+    cfg, store, fake_bin
+):
     seeded_pr(store)
     body = (FIXTURES / "oplane-bot.md").read_text()
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
         stdout=review_payload(body, author="oplane-bot", review_id="PRR_9"),
     )
-    fake_bin.respond("claude", stdout=json.dumps([
-        {"severity": "maintenance", "summary": "headers logged", "body": "...",
-         "file": "src/api/retry.py"}
-    ]))
+    fake_bin.respond(
+        "claude",
+        stdout=json.dumps(
+            [
+                {
+                    "severity": "maintenance",
+                    "summary": "headers logged",
+                    "body": "...",
+                    "file": "src/api/retry.py",
+                }
+            ]
+        ),
+    )
     records = collect(cfg, store, ticket_doc(), "acme/api#115")
     assert records[0]["review"] is None
     assert records[0]["author"] == "oplane-bot"
@@ -119,14 +152,30 @@ def test_issue_comments_are_collected_too(cfg, store, fake_bin):
     fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
     fake_bin.respond(
         "gh api repos/acme/api/issues/115/comments",
-        stdout=json.dumps([
-            {"id": 42, "user": {"login": "sfrankle"},
-             "body": (FIXTURES / "human-comment.md").read_text(), "created_at": "t"}
-        ]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": 42,
+                    "user": {"login": "sfrankle"},
+                    "body": (FIXTURES / "human-comment.md").read_text(),
+                    "created_at": "t",
+                }
+            ]
+        ),
     )
-    fake_bin.respond("claude", stdout=json.dumps([
-        {"severity": "blocking", "summary": "429 spin", "body": "...", "file": "src/api/retry.py"}
-    ]))
+    fake_bin.respond(
+        "claude",
+        stdout=json.dumps(
+            [
+                {
+                    "severity": "blocking",
+                    "summary": "429 spin",
+                    "body": "...",
+                    "file": "src/api/retry.py",
+                }
+            ]
+        ),
+    )
     records = collect(cfg, store, ticket_doc(), "acme/api#115")
     assert records[0]["source_id"] == "42"
     assert records[0]["author"] == "sfrankle"
@@ -138,11 +187,16 @@ def test_our_own_dispatch_comment_is_not_collected_as_a_review(cfg, store, fake_
     fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
     fake_bin.respond(
         "gh api repos/acme/api/issues/115/comments",
-        stdout=json.dumps([
-            {"id": 7, "user": {"login": "sfrankle"},
-             "body": "/review docs-tests\n<details>\nCheck docs and tests.\n</details>\n",
-             "created_at": "t"}
-        ]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": 7,
+                    "user": {"login": "sfrankle"},
+                    "body": "/review docs-tests\n<details>\nCheck docs and tests.\n</details>\n",
+                    "created_at": "t",
+                }
+            ]
+        ),
     )
     assert collect(cfg, store, ticket_doc(), "acme/api#115") == []
 
@@ -159,7 +213,9 @@ def test_an_empty_review_collects_with_no_findings(cfg, store, fake_bin):
 
         **Verdict:** approved.
     """)
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(empty))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(empty)
+    )
     records = collect(cfg, store, ticket_doc(), "acme/api#115")
     assert records[0]["findings"] == []
     assert fake_bin.calls_to("claude") == []
@@ -168,7 +224,9 @@ def test_an_empty_review_collects_with_no_findings(cfg, store, fake_bin):
 def test_dry_run_writes_nothing_and_spends_no_tokens(cfg, store, fake_bin):
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     collect(cfg, store, ticket_doc(), "acme/api#115", dry_run=True)
     assert store.read_findings("acme/api#115")["findings"] == []
@@ -180,7 +238,9 @@ def test_the_same_finding_arriving_twice_is_minted_once(cfg, store, fake_bin):
     """oplane-bot posts on every push; a re-run review repeats unfixed items."""
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     ticket = ticket_doc()
     collect(cfg, store, ticket, "acme/api#115")
@@ -200,7 +260,9 @@ def test_a_resolved_finding_reopens_if_re_raised(cfg, store, fake_bin):
     against still-`open` findings."""
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     ticket = ticket_doc()
     collect(cfg, store, ticket, "acme/api#115")
@@ -220,7 +282,8 @@ def test_a_resolved_finding_reopens_if_re_raised(cfg, store, fake_bin):
     assert len(findings) == 4
     assert findings[3]["status"] == "open"
     assert (findings[3]["file"], findings[3]["summary"]) == (
-        doc["findings"][0]["file"], doc["findings"][0]["summary"],
+        doc["findings"][0]["file"],
+        doc["findings"][0]["summary"],
     )
 
 

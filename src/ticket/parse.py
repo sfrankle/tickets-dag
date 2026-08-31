@@ -98,7 +98,9 @@ def parse_script(body: str) -> list[dict] | None:
     findings: list[dict] = []
     for match in recognised:
         severity = next(
-            name for emoji, name in SEVERITIES.items() if emoji in match.group("summary")
+            name
+            for emoji, name in SEVERITIES.items()
+            if emoji in match.group("summary")
         )
         for bullet in _bullets(match.group("body")):
             findings.append(
@@ -117,9 +119,10 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
     model = cfg.model_id("haiku")
     completed = subprocess.run(
         ["claude", "-p", "--model", model],
-        input=HAIKU_PROMPT + body,     # stdin, not argv — decision #21
+        input=HAIKU_PROMPT + body,  # stdin, not argv — decision #21
         capture_output=True,
         text=True,
+        check=False,
     )
     if completed.returncode != 0:
         raise TicketError(f"haiku parse failed: {completed.stderr.strip()}")
@@ -135,7 +138,9 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
         severity = item.get("severity")
         findings.append(
             {
-                "severity": severity if severity in SEVERITIES.values() else DEFAULT_SEVERITY,
+                "severity": severity
+                if severity in SEVERITIES.values()
+                else DEFAULT_SEVERITY,
                 "summary": (item.get("summary") or "").strip(),
                 "body": item.get("body") or item.get("summary") or "",
                 "file": item.get("file") or None,

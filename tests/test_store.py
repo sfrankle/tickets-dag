@@ -3,7 +3,7 @@ import json
 import pytest
 
 from ticket.errors import StoreError
-from ticket.store import Store, pr_slug
+from ticket.store import pr_slug
 
 
 def test_pr_slug():
@@ -103,16 +103,17 @@ def test_reading_corrupt_json_raises_store_error(store):
 
 
 def test_lock_is_exclusive(store):
-    with store.lock("ABC-123"):
-        with pytest.raises(StoreError, match="ABC-123"):
-            with store.lock("ABC-123"):
-                pass
+    with (
+        store.lock("ABC-123"),
+        pytest.raises(StoreError, match="ABC-123"),
+        store.lock("ABC-123"),
+    ):
+        pass
 
 
 def test_lock_is_released_after_an_exception(store):
-    with pytest.raises(ValueError):
-        with store.lock("ABC-123"):
-            raise ValueError("boom")
+    with pytest.raises(ValueError), store.lock("ABC-123"):
+        raise ValueError("boom")
     with store.lock("ABC-123"):
         pass
 

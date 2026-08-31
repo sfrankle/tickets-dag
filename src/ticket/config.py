@@ -60,7 +60,7 @@ class Step:
     model: str | None = None
     prompt: str | None = None
     needs: tuple[str, ...] = ()
-    args: tuple[str, ...] = ()   # extra argv for a handoff, e.g. agent mode
+    args: tuple[str, ...] = ()  # extra argv for a handoff, e.g. agent mode
 
 
 @dataclass(frozen=True)
@@ -75,8 +75,8 @@ class Review:
 
 @dataclass(frozen=True)
 class Config:
-    store: Path   # where state lives; defaults to `root` (decision #24)
-    root: Path    # the config file's directory; every relative path anchors here
+    store: Path  # where state lives; defaults to `root` (decision #24)
+    root: Path  # the config file's directory; every relative path anchors here
     models: dict[str, str]
     default_model: str
     steps: tuple[Step, ...]
@@ -237,7 +237,9 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
                 f"review {review_id} has dispatch {dispatch!r}: expected bot or local"
             )
         if not raw.get("prompt"):
-            raise ConfigError(f"review {review_id} has no prompt: (both transports need one)")
+            raise ConfigError(
+                f"review {review_id} has no prompt: (both transports need one)"
+            )
         if dispatch == "local" and not (raw.get("model") or default_model):
             raise ConfigError(
                 f"review {review_id} is dispatch: local with no model: and no defaults.model"
@@ -264,7 +266,9 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
 def load_config(path: Path | None = None) -> Config:
     path = (path or config_path()).expanduser()
     if not path.is_file():
-        raise ConfigError(f"no config at {path}. Copy examples/config.yml to get started.")
+        raise ConfigError(
+            f"no config at {path}. Copy examples/config.yml to get started."
+        )
     raw = yaml.safe_load(path.read_text()) or {}
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} is not a YAML mapping")
@@ -272,7 +276,9 @@ def load_config(path: Path | None = None) -> Config:
     models = dict(raw.get("models") or {})
     default_model = (raw.get("defaults") or {}).get("model")
     if default_model and default_model not in models:
-        raise ConfigError(f"defaults.model is {default_model!r}, which is not in models:")
+        raise ConfigError(
+            f"defaults.model is {default_model!r}, which is not in models:"
+        )
 
     # The store defaults to the directory the config was found in, not to a
     # fixed `~/.ticket`, so pointing `$TICKET_CONFIG` somewhere else moves the
@@ -291,7 +297,9 @@ def load_config(path: Path | None = None) -> Config:
         repos=dict(raw.get("repos") or {}),
         worktrees=Worktrees(
             enabled=bool(wt.get("enabled", True)),
-            root=_anchor(wt["root"], root) if wt.get("root") else DEFAULT_WORKTREE_ROOT.expanduser(),
+            root=_anchor(wt["root"], root)
+            if wt.get("root")
+            else DEFAULT_WORKTREE_ROOT.expanduser(),
             branch=wt.get("branch") or "{key}",
         ),
         sync=bool(raw.get("sync", True)),

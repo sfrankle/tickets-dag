@@ -68,7 +68,7 @@ def started(fake_bin):
 def test_review_dispatches_the_next_one(env, fake_bin, capsys):
     started(fake_bin)
     assert main(["review", "ABC-123"]) == 0
-    comment = [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]][0]
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
     assert "/review docs-tests" in " ".join(comment)
 
 
@@ -81,7 +81,7 @@ def test_review_accepts_an_explicit_id(env, fake_bin):
 def test_next_dispatches_a_review_once_a_pr_exists(env, fake_bin):
     started(fake_bin)
     main(["next", "ABC-123"])
-    comment = [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]][0]
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
     assert "/review docs-tests" in " ".join(comment)
 
 
@@ -90,10 +90,16 @@ def test_collect_ingests_and_next_moves_to_fix(env, fake_bin, capsys):
     main(["review", "ABC-123"])
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
-        stdout=json.dumps([{
-            "id": "PRR_1", "user": {"login": "claude"},
-            "body": (FIXTURES / "example-review.md").read_text(), "submitted_at": "t",
-        }]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "claude"},
+                    "body": (FIXTURES / "example-review.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
     )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     assert main(["collect", "ABC-123"]) == 0
@@ -109,10 +115,16 @@ def test_findings_lists_by_status(env, fake_bin, capsys):
     main(["review", "ABC-123"])
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
-        stdout=json.dumps([{
-            "id": "PRR_1", "user": {"login": "claude"},
-            "body": (FIXTURES / "example-review.md").read_text(), "submitted_at": "t",
-        }]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "claude"},
+                    "body": (FIXTURES / "example-review.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
     )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     main(["collect", "ABC-123"])
@@ -137,10 +149,16 @@ def test_decide_closes_a_finding(env, fake_bin, capsys):
     main(["review", "ABC-123"])
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
-        stdout=json.dumps([{
-            "id": "PRR_1", "user": {"login": "claude"},
-            "body": (FIXTURES / "example-review.md").read_text(), "submitted_at": "t",
-        }]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "claude"},
+                    "body": (FIXTURES / "example-review.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
     )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     main(["collect", "ABC-123"])
@@ -155,10 +173,16 @@ def test_effort_overrides(env, fake_bin, capsys):
     main(["review", "ABC-123"])
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
-        stdout=json.dumps([{
-            "id": "PRR_1", "user": {"login": "claude"},
-            "body": (FIXTURES / "example-review.md").read_text(), "submitted_at": "t",
-        }]),
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "claude"},
+                    "body": (FIXTURES / "example-review.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
     )
     fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
     main(["collect", "ABC-123"])
@@ -279,7 +303,9 @@ def _add_fake_jira(fake_bin, summary: str) -> None:
     import stat
     import sys
 
-    body = (Path(__file__).parent / "fakes" / "fake_tool.py").read_text().split("\n", 1)[1]
+    body = (
+        (Path(__file__).parent / "fakes" / "fake_tool.py").read_text().split("\n", 1)[1]
+    )
     target = fake_bin.directory / "jira"
     target.write_text(f"#!{sys.executable}\n{body}")
     target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

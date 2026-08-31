@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ticket.config import Config, config_path, load_config
+from ticket.config import config_path, load_config
 from ticket.errors import ConfigError
 
 SAMPLE = textwrap.dedent("""
@@ -158,9 +158,7 @@ def test_config_path_env_var(tmp_path, monkeypatch):
 
 
 def test_duplicate_step_id_is_an_error(tmp_path):
-    bad = SAMPLE.replace(
-        "\nreviews:", "\n  - id: evaluate\n    gate: true\n\nreviews:"
-    )
+    bad = SAMPLE.replace("\nreviews:", "\n  - id: evaluate\n    gate: true\n\nreviews:")
     with pytest.raises(ConfigError, match="duplicate step id: evaluate"):
         load_config(write(tmp_path, bad))
 
@@ -172,8 +170,9 @@ def test_unknown_needs_target_is_an_error(tmp_path):
 
 
 def test_step_with_no_recognised_kind_is_an_error(tmp_path):
-    bad = SAMPLE.replace("  - id: worktree\n    run: scripts/worktree.sh\n",
-                         "  - id: worktree\n")
+    bad = SAMPLE.replace(
+        "  - id: worktree\n    run: scripts/worktree.sh\n", "  - id: worktree\n"
+    )
     with pytest.raises(ConfigError, match="worktree"):
         load_config(write(tmp_path, bad))
 
@@ -209,7 +208,9 @@ def test_duplicate_review_order_is_an_error(tmp_path):
 def test_local_review_with_no_resolvable_model_is_an_error(tmp_path):
     """Mirrors the handoff no-model check: a `dispatch: local` review with no
     `model:` and no `defaults.model` must fail at load time, not mid-DAG."""
-    bad = SAMPLE.replace("    dispatch: local\n    model: opus\n", "    dispatch: local\n")
+    bad = SAMPLE.replace(
+        "    dispatch: local\n    model: opus\n", "    dispatch: local\n"
+    )
     bad = bad.replace("defaults:\n  model: opus\n", "")
     with pytest.raises(ConfigError, match="architecture"):
         load_config(write(tmp_path, bad))

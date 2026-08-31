@@ -29,14 +29,19 @@ class FakeBin:
     def _flush(self) -> None:
         self.responses_file.write_text(json.dumps(self._responses))
 
-    def respond(self, prefix: str, stdout: str = "", exit_code: int = 0, stderr: str = "") -> None:
+    def respond(
+        self, prefix: str, stdout: str = "", exit_code: int = 0, stderr: str = ""
+    ) -> None:
         """Make any call whose joined argv starts with `prefix` return this."""
-        self._responses.insert(0, {
-            "prefix": prefix,
-            "stdout": stdout,
-            "stderr": stderr,
-            "exit_code": exit_code,
-        })
+        self._responses.insert(
+            0,
+            {
+                "prefix": prefix,
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+            },
+        )
         self._flush()
 
     @property
@@ -56,7 +61,9 @@ class FakeBin:
         """
         if not self.stdin_log.exists():
             return []
-        entries = [json.loads(l) for l in self.stdin_log.read_text().splitlines() if l]
+        entries = [
+            json.loads(line) for line in self.stdin_log.read_text().splitlines() if line
+        ]
         return [e["stdin"] for e in entries if e["tool"] == tool]
 
 

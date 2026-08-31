@@ -8,7 +8,6 @@ Moving a review between the two is a one-word config edit.
 from __future__ import annotations
 
 import subprocess
-
 from pathlib import Path
 
 from . import gh
@@ -50,6 +49,7 @@ def _run_local(cfg: Config, ticket: dict, review: Review, prompt_text: str) -> s
         input=prompt_text,
         capture_output=True,
         text=True,
+        check=False,
     )
     if completed.returncode != 0:
         raise TicketError(
@@ -95,7 +95,12 @@ def dispatch(
             body = _run_local(cfg, ticket, review, prompt_text)
             gh.pr_comment(pr_ref, body, dry_run=False)
 
-    record = {"review": review.id, "at": now(), "head": head, "transport": review.dispatch}
+    record = {
+        "review": review.id,
+        "at": now(),
+        "head": head,
+        "transport": review.dispatch,
+    }
     if dry_run:
         return record
 

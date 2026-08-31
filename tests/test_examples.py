@@ -7,7 +7,7 @@ EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 def test_example_config_loads():
     cfg = load_config(EXAMPLES / "config.yml")
-    assert [s.id for s in cfg.steps][0] == "evaluate"
+    assert next(s.id for s in cfg.steps) == "evaluate"
     assert [r.id for r in cfg.reviews] == ["docs-tests", "architecture", "security"]
 
 

@@ -62,7 +62,9 @@ def test_none_blocks_produce_no_findings():
 
 
 def test_script_marks_its_findings_parsed_by_script():
-    assert all(f["parsed_by"] == "script" for f in parse_script(body("example-review.md")))
+    assert all(
+        f["parsed_by"] == "script" for f in parse_script(body("example-review.md"))
+    )
 
 
 def test_script_returns_none_without_a_verdict_line():
@@ -83,8 +85,14 @@ def test_script_never_sets_effort():
 
 
 def test_haiku_fallback_is_used_for_a_human_comment(cfg, fake_bin):
-    payload = [{"severity": "blocking", "summary": "retry spins on 429",
-                "body": "cap the retry", "file": "src/api/retry.py"}]
+    payload = [
+        {
+            "severity": "blocking",
+            "summary": "retry spins on 429",
+            "body": "cap the retry",
+            "file": "src/api/retry.py",
+        }
+    ]
     fake_bin.respond("claude", stdout=json.dumps(payload))
     findings = parse(cfg, body("human-comment.md"))
     assert findings[0]["parsed_by"] == "haiku"

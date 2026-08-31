@@ -50,7 +50,7 @@ def test_bot_body_shape(cfg):
 def test_bot_dispatch_posts_a_comment(cfg, store, fake_bin):
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
     dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("docs-tests"))
-    comment = [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]][0]
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
     assert "/review docs-tests" in " ".join(comment)
 
 
@@ -78,7 +78,7 @@ def test_local_dispatch_posts_its_output_as_a_pr_comment(cfg, store, fake_bin):
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
     fake_bin.respond("claude", stdout="the review body")
     dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("architecture"))
-    comment = [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]][0]
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
     assert "the review body" in " ".join(comment)
 
 
@@ -114,7 +114,9 @@ def test_a_local_review_runs_in_the_worktree(cfg, store, fake_bin, tmp_path):
 
 def test_dry_run_posts_nothing_and_records_nothing(cfg, store, fake_bin):
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
-    dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("docs-tests"), dry_run=True)
+    dispatch(
+        cfg, store, ticket_doc(), "acme/api#115", cfg.review("docs-tests"), dry_run=True
+    )
     assert [c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"]] == []
     assert store.read_pr("acme/api#115") is None
 
@@ -129,6 +131,8 @@ def test_dry_run_still_syncs_the_worktree(cfg, store, fake_bin, tmp_path):
     (checkout / ".git").mkdir(parents=True)
     ticket = ticket_doc()
     ticket["worktree"] = str(checkout)
-    dispatch(cfg, store, ticket, "acme/api#115", cfg.review("architecture"), dry_run=True)
+    dispatch(
+        cfg, store, ticket, "acme/api#115", cfg.review("architecture"), dry_run=True
+    )
     assert fake_bin.calls_to("claude") == []
     assert [c for c in fake_bin.calls_to("git") if c[1:2] == ["fetch"]] != []

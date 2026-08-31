@@ -129,7 +129,11 @@ def next_action(
     if has_pr:
         uncollected = _uncollected(pr)
         if uncollected:
-            return Action("collect", uncollected, f"{uncollected} was dispatched but not collected")
+            return Action(
+                "collect",
+                uncollected,
+                f"{uncollected} was dispatched but not collected",
+            )
 
         finding = _open_finding(findings)
         if finding:
@@ -145,7 +149,9 @@ def next_action(
     if step:
         step_id, reason = step
         if cfg.step(step_id).kind == "gate":
-            return Action("gate", step_id, f"parked at {step_id}; ticket release {step_id} <KEY>")
+            return Action(
+                "gate", step_id, f"parked at {step_id}; ticket release {step_id} <KEY>"
+            )
         return Action("step", step_id, reason)
 
     if has_pr:
@@ -154,5 +160,9 @@ def next_action(
             return Action("review", review, f"{review} is the next review in order")
 
     if not has_pr:
-        return Action("rest", None, "every step is done, skipped, or blocked, and there is no PR")
-    return Action("rest", None, "every step is done, every review collected, no findings open")
+        return Action(
+            "rest", None, "every step is done, skipped, or blocked, and there is no PR"
+        )
+    return Action(
+        "rest", None, "every step is done, every review collected, no findings open"
+    )

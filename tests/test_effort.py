@@ -3,8 +3,8 @@ import textwrap
 
 import pytest
 
-from ticket.effort import assign_effort
 from ticket.config import load_config
+from ticket.effort import assign_effort
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -26,7 +26,11 @@ def cfg(tmp_path):
 
 def findings():
     return [
-        {"summary": "README names a removed flag", "body": "...", "severity": "maintenance"},
+        {
+            "summary": "README names a removed flag",
+            "body": "...",
+            "severity": "maintenance",
+        },
         {"summary": "retry loop is unbounded", "body": "...", "severity": "blocking"},
     ]
 

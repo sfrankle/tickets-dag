@@ -1,4 +1,5 @@
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -37,7 +38,13 @@ def cfg(tmp_path):
 
 
 def ticket_doc():
-    return {"key": "ABC-123", "repo": "acme/api", "prs": [], "steps": {}, "tracked": True}
+    return {
+        "key": "ABC-123",
+        "repo": "acme/api",
+        "prs": [],
+        "steps": {},
+        "tracked": True,
+    }
 
 
 def write_script(cfg, name, body):
@@ -62,14 +69,14 @@ def test_script_step_failure_records_exit_code_and_log(cfg, store):
     result = run_step(cfg, store, ticket, cfg.step("draft-pr"))
     assert result.status == "failed"
     assert ticket["steps"]["draft-pr"]["exit_code"] == 3
-    assert "nope" in open(ticket["steps"]["draft-pr"]["log"]).read()
+    assert "nope" in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
 
 
 def test_script_step_receives_ticket_env(cfg, store):
     write_script(cfg, "draft-pr.sh", 'echo "$TICKET_KEY $TICKET_REPO"\n')
     ticket = ticket_doc()
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    assert "ABC-123 acme/api" in open(ticket["steps"]["draft-pr"]["log"]).read()
+    assert "ABC-123 acme/api" in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
 
 
 def test_a_printed_pr_ref_is_registered_on_the_ticket(cfg, store):
@@ -105,10 +112,12 @@ def test_the_prompt_goes_on_stdin_not_in_argv(cfg, store, fake_bin):
 def test_handoff_args_are_passed_through(cfg, store, fake_bin, tmp_path):
     """`args:` is where agent mode lives, so `implement` can actually write."""
     config = tmp_path / "config.yml"
-    config.write_text(CONFIG.replace(
-        "  - id: describe\n    model: haiku\n",
-        "  - id: describe\n    model: haiku\n    args: [--permission-mode, acceptEdits]\n",
-    ))
+    config.write_text(
+        CONFIG.replace(
+            "  - id: describe\n    model: haiku\n",
+            "  - id: describe\n    model: haiku\n    args: [--permission-mode, acceptEdits]\n",
+        )
+    )
     from ticket.config import load_config as reload
 
     scoped = reload(config)
@@ -123,14 +132,18 @@ def test_a_step_runs_in_the_worktree_once_one_is_registered(cfg, store):
     ticket = ticket_doc()
     ticket["worktree"] = str(checkout)
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    assert str(checkout) in open(ticket["steps"]["draft-pr"]["log"]).read()
+    assert str(checkout) in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
 
 
 def test_a_step_gets_the_worktree_and_branch_in_its_env(cfg, store):
-    write_script(cfg, "draft-pr.sh", 'echo "$TICKET_WORKTREE|$TICKET_BRANCH|$TICKET_USE_WORKTREES"\n')
+    write_script(
+        cfg,
+        "draft-pr.sh",
+        'echo "$TICKET_WORKTREE|$TICKET_BRANCH|$TICKET_USE_WORKTREES"\n',
+    )
     ticket = ticket_doc()
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    logged = open(ticket["steps"]["draft-pr"]["log"]).read()
+    logged = Path(ticket["steps"]["draft-pr"]["log"]).read_text()
     assert "ABC-123|1" in logged
 
 

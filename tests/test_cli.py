@@ -31,7 +31,9 @@ def env(tmp_path, monkeypatch):
     config.write_text(CONFIG)
     (tmp_path / "prompts" / "reviews").mkdir(parents=True)
     (tmp_path / "prompts" / "evaluate.md").write_text("Evaluate.\n")
-    (tmp_path / "prompts" / "reviews" / "docs-tests.md").write_text("Check docs and tests.\n")
+    (tmp_path / "prompts" / "reviews" / "docs-tests.md").write_text(
+        "Check docs and tests.\n"
+    )
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     script = scripts / "draft-pr.sh"
@@ -154,7 +156,9 @@ def test_repo_overrides_are_applied_for_the_ticket_repo(env, capsys, monkeypatch
     # `draft-pr` has no dependent, so skipping it does not strand anything
     # (config.py rejects a skip that would — see
     # test_a_repo_skip_that_strands_a_dependent_is_an_error in test_config.py).
-    config.write_text(CONFIG + "\nrepos:\n  acme/api:\n    steps:\n      skip: [draft-pr]\n")
+    config.write_text(
+        CONFIG + "\nrepos:\n  acme/api:\n    steps:\n      skip: [draft-pr]\n"
+    )
     main(["track", "ABC-123", "--repo", "acme/api"])
     main(["ABC-123"])
     out = capsys.readouterr().out

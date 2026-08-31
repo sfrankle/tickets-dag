@@ -69,7 +69,9 @@ def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
     return argv, cfg.path_to(step.prompt).read_text()
 
 
-def _tee(argv: list[str], *, cwd: Path, env: dict, stdin_text: str | None) -> tuple[str, int]:
+def _tee(
+    argv: list[str], *, cwd: Path, env: dict, stdin_text: str | None
+) -> tuple[str, int]:
     """Run, streaming output to the terminal as it arrives and collecting it.
 
     A handoff can run for twenty minutes; capturing silently and printing at the
@@ -125,7 +127,10 @@ def run_step(
     log_file = store.log_path(ticket["key"], step.id)
     try:
         output, exit_code = _tee(
-            argv, cwd=workdir(cfg, ticket), env=step_env(cfg, ticket), stdin_text=stdin_text
+            argv,
+            cwd=workdir(cfg, ticket),
+            env=step_env(cfg, ticket),
+            stdin_text=stdin_text,
         )
     except OSError as exc:
         output = f"could not execute {argv[0]}: {exc}\n"

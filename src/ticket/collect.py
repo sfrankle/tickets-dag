@@ -12,8 +12,8 @@ import re
 from pathlib import Path
 
 from . import gh
-from .effort import assign_effort
 from .config import Config
+from .effort import assign_effort
 from .parse import parse_haiku, parse_script
 from .resolve import _uncollected as next_uncollected
 from .reviews import ensure_pr
@@ -72,9 +72,7 @@ def collect(
         if reason:
             print(f"sync: {reason}")
 
-    sources = [
-        {"kind": "review", **item} for item in gh.pr_reviews(pr_ref)
-    ] + [
+    sources = [{"kind": "review", **item} for item in gh.pr_reviews(pr_ref)] + [
         {"kind": "comment", **item} for item in gh.pr_comments(pr_ref)
     ]
 
@@ -97,10 +95,15 @@ def collect(
             # Stop before the parser: a dry run must not spend a Haiku call on
             # parsing or on estimating effort.
             print(f"[dry-run] would collect {source['id']} from {source['author']}")
-            added.append({
-                "source_id": source["id"], "review": review_id,
-                "author": source["author"], "at": now(), "findings": [],
-            })
+            added.append(
+                {
+                    "source_id": source["id"],
+                    "review": review_id,
+                    "author": source["author"],
+                    "at": now(),
+                    "findings": [],
+                }
+            )
             continue
 
         findings = script_findings

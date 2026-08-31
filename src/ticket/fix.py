@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 
 from . import gh
-from .effort import EFFORTS
 from .config import Config
+from .effort import EFFORTS
 from .errors import GhError, TicketError
 from .store import Store
 
@@ -70,8 +70,11 @@ def scan_trailers(worktree: Path) -> dict[str, str]:
     """
     revisions = ["HEAD"]
     try:
-        gh.run(["git", "rev-parse", "--verify", "--quiet", "@{upstream}"],
-               cwd=worktree, retries=1)
+        gh.run(
+            ["git", "rev-parse", "--verify", "--quiet", "@{upstream}"],
+            cwd=worktree,
+            retries=1,
+        )
         revisions.append("@{upstream}")
     except GhError:
         pass
@@ -83,8 +86,8 @@ def scan_trailers(worktree: Path) -> dict[str, str]:
             continue
         sha, message = entry.split("\x00", 1)
         sha = sha.strip()
-        for line in message.splitlines():
-            line = line.strip()
+        for raw in message.splitlines():
+            line = raw.strip()
             if line.startswith(f"{TRAILER_KEY}:"):
                 finding_id = line.split(":", 1)[1].strip()
                 found.setdefault(finding_id, sha)
@@ -119,7 +122,9 @@ def resolve_from_git(cfg: Config, store: Store, ticket: dict, pr_ref: str) -> li
     return closed
 
 
-def wait_for_head(pr_ref: str, before: str, *, attempts: int = 30, poll=time.sleep) -> str:
+def wait_for_head(
+    pr_ref: str, before: str, *, attempts: int = 30, poll=time.sleep
+) -> str:
     """The bot runs one action per PR and silently drops a second dispatch."""
     for _ in range(attempts):
         head = gh.pr_head(pr_ref)
@@ -164,9 +169,10 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     completed = subprocess.run(
         ["claude", "-p", "--model", cfg.model_id(cfg.default_model)],
         cwd=str(worktree),
-        input=prompt,                  # stdin, not argv — decision #21
+        input=prompt,  # stdin, not argv — decision #21
         capture_output=True,
         text=True,
+        check=False,
     )
     if completed.returncode != 0:
         raise TicketError(
@@ -176,9 +182,12 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     try:
         gh.run(
             [
-                "git", "commit",
-                "-m", f"fix: {finding.get('summary', finding['id'])}",
-                "-m", trailer(finding["id"]),
+                "git",
+                "commit",
+                "-m",
+                f"fix: {finding.get('summary', finding['id'])}",
+                "-m",
+                trailer(finding["id"]),
             ],
             cwd=worktree,
             retries=1,

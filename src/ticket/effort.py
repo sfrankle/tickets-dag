@@ -63,9 +63,10 @@ def assign_effort(cfg: Config, findings: list[dict]) -> list[dict]:
     try:
         completed = subprocess.run(
             ["claude", "-p", "--model", cfg.model_id("haiku")],
-            input=prompt,              # stdin, not argv — decision #21
+            input=prompt,  # stdin, not argv — decision #21
             capture_output=True,
             text=True,
+            check=False,
         )
         answers = loads_loose(completed.stdout) if completed.returncode == 0 else None
     except (OSError, json.JSONDecodeError):
@@ -74,6 +75,6 @@ def assign_effort(cfg: Config, findings: list[dict]) -> list[dict]:
     if not isinstance(answers, list) or len(answers) != len(findings):
         answers = [None] * len(findings)
 
-    for finding, answer in zip(findings, answers):
+    for finding, answer in zip(findings, answers, strict=True):
         finding["effort"] = answer if answer in EFFORTS else None
     return findings

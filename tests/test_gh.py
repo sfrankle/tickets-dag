@@ -100,17 +100,28 @@ def test_sync_on_a_directory_with_no_git_is_reported_not_fetched(tmp_path, fake_
 
 def test_pr_reviews_normalises_shape(fake_bin):
     payload = [
-        {"id": "PRR_1", "user": {"login": "oplane-bot"}, "body": "b", "submitted_at": "t"},
+        {
+            "id": "PRR_1",
+            "user": {"login": "oplane-bot"},
+            "body": "b",
+            "submitted_at": "t",
+        },
     ]
-    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=json.dumps(payload))
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=json.dumps(payload)
+    )
     assert gh.pr_reviews("acme/api#115") == [
         {"id": "PRR_1", "author": "oplane-bot", "body": "b", "submitted_at": "t"}
     ]
 
 
 def test_pr_comments_normalises_shape(fake_bin):
-    payload = [{"id": 42, "user": {"login": "sfrankle"}, "body": "b", "created_at": "t"}]
-    fake_bin.respond("gh api repos/acme/api/issues/115/comments", stdout=json.dumps(payload))
+    payload = [
+        {"id": 42, "user": {"login": "sfrankle"}, "body": "b", "created_at": "t"}
+    ]
+    fake_bin.respond(
+        "gh api repos/acme/api/issues/115/comments", stdout=json.dumps(payload)
+    )
     assert gh.pr_comments("acme/api#115") == [
         {"id": "42", "author": "sfrankle", "body": "b", "submitted_at": "t"}
     ]

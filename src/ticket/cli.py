@@ -12,13 +12,12 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
+from dataclasses import replace as replace_fields
 from pathlib import Path
 
-from dataclasses import replace as replace_fields
-
 from . import collect as collect_module
-from . import gh
 from . import fix as fix_module
+from . import gh
 from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, load_config
@@ -32,8 +31,18 @@ KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
 # Verbs that change something. `main` takes the per-ticket advisory lock around
 # these, and only these, so two runs on one ticket cannot interleave writes.
 WRITE_VERBS = {
-    "track", "next", "run", "skip", "release", "review",
-    "collect", "fix", "decide", "effort", "reset", "refresh",
+    "track",
+    "next",
+    "run",
+    "skip",
+    "release",
+    "review",
+    "collect",
+    "fix",
+    "decide",
+    "effort",
+    "reset",
+    "refresh",
 }
 
 
@@ -43,7 +52,7 @@ class Context:
     store: Store
 
     @classmethod
-    def load(cls, repo: str | None = None, no_sync: bool = False) -> "Context":
+    def load(cls, repo: str | None = None, no_sync: bool = False) -> Context:
         cfg = load_config()
         if repo:
             cfg = cfg.for_repo(repo)
@@ -57,7 +66,9 @@ class Context:
 def load_ticket(ctx: Context, key: str) -> dict:
     ticket = ctx.store.read_ticket(key)
     if not ticket:
-        raise TicketError(f"{key} is not tracked. Run: ticket track {key} --repo <owner/repo>")
+        raise TicketError(
+            f"{key} is not tracked. Run: ticket track {key} --repo <owner/repo>"
+        )
     return ticket
 
 
@@ -100,7 +111,9 @@ def print_queue(ctx: Context, as_json: bool) -> int:
         print(json.dumps(rows, indent=2))
         return 0
     if not rows:
-        print("No tracked tickets. Start one with: ticket track <KEY> --repo <owner/repo>")
+        print(
+            "No tracked tickets. Start one with: ticket track <KEY> --repo <owner/repo>"
+        )
         return 0
     width = max(len(r["key"]) for r in rows)
     for row in rows:
@@ -122,7 +135,9 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     for step in scoped(ctx, ticket).cfg.steps:
         status = (ticket.get("steps") or {}).get(step.id, {}).get("status", "-")
         print(f"  {step.id:<16} {status}")
-    print(f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}")
+    print(
+        f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"
+    )
     return 0
 
 
@@ -135,7 +150,9 @@ def pick_pr(ticket: dict, args) -> str:
         return prs[-1]
     matches = [p for p in prs if p.endswith(f"#{wanted}")]
     if not matches:
-        raise TicketError(f"{ticket['key']} has no PR #{wanted}. Known: {', '.join(prs)}")
+        raise TicketError(
+            f"{ticket['key']} has no PR #{wanted}. Known: {', '.join(prs)}"
+        )
     return matches[0]
 
 
@@ -170,7 +187,9 @@ def cmd_track(args) -> int:
 
 
 def cmd_show(args) -> int:
-    return print_row(Context.load(no_sync=getattr(args, "no_sync", False)), args.key, args.json)
+    return print_row(
+        Context.load(no_sync=getattr(args, "no_sync", False)), args.key, args.json
+    )
 
 
 def cmd_queue(args) -> int:
@@ -179,30 +198,41 @@ def cmd_queue(args) -> int:
 
 def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
     if action.kind == "gate":
-        print(f"parked at {action.target}. Release with: ticket release {action.target} {ticket['key']}")
+        print(
+            f"parked at {action.target}. Release with: ticket release {action.target} {ticket['key']}"
+        )
         return 0
     if action.kind == "rest":
         print(f"at rest: {action.reason}")
         return 0
     if action.kind == "step":
         step = ctx.cfg.step(action.target)
-        result = steps_module.run_step(ctx.cfg, ctx.store, ticket, step, dry_run=dry_run)
+        result = steps_module.run_step(
+            ctx.cfg, ctx.store, ticket, step, dry_run=dry_run
+        )
         if result.pr:
             print(f"registered PR {result.pr}")
         if result.status == "failed":
-            print(f"{step.id} failed (exit {result.exit_code}). Log: {result.log}", file=sys.stderr)
+            print(
+                f"{step.id} failed (exit {result.exit_code}). Log: {result.log}",
+                file=sys.stderr,
+            )
             return 1
         print(f"{step.id} {result.status}")
         return 0
     if action.kind == "review":
         review = ctx.cfg.review(action.target)
         pr_ref = ticket["prs"][-1]
-        reviews_module.dispatch(ctx.cfg, ctx.store, ticket, pr_ref, review, dry_run=dry_run)
+        reviews_module.dispatch(
+            ctx.cfg, ctx.store, ticket, pr_ref, review, dry_run=dry_run
+        )
         print(f"dispatched {review.id} ({review.dispatch}) on {pr_ref}")
         return 0
     if action.kind == "collect":
         pr_ref = ticket["prs"][-1]
-        added = collect_module.collect(ctx.cfg, ctx.store, ticket, pr_ref, dry_run=dry_run)
+        added = collect_module.collect(
+            ctx.cfg, ctx.store, ticket, pr_ref, dry_run=dry_run
+        )
         print(f"collected {len(added)} new sources" if added else "nothing new yet")
         return 0
     if action.kind == "fix":
@@ -229,13 +259,20 @@ def cmd_run(args) -> int:
     inner = scoped(ctx, ticket)
     step = inner.cfg.step(args.step)
     if step.kind == "gate":
-        print(f"{step.id} is a gate. Release it with: ticket release {step.id} {args.key}")
+        print(
+            f"{step.id} is a gate. Release it with: ticket release {step.id} {args.key}"
+        )
         return 0
-    result = steps_module.run_step(inner.cfg, inner.store, ticket, step, dry_run=args.dry_run)
+    result = steps_module.run_step(
+        inner.cfg, inner.store, ticket, step, dry_run=args.dry_run
+    )
     if result.pr:
         print(f"registered PR {result.pr}")
     if result.status == "failed":
-        print(f"{step.id} failed (exit {result.exit_code}). Log: {result.log}", file=sys.stderr)
+        print(
+            f"{step.id} failed (exit {result.exit_code}). Log: {result.log}",
+            file=sys.stderr,
+        )
         return 1
     print(f"{step.id} {result.status}")
     return 0
@@ -263,9 +300,15 @@ def cmd_skip(args) -> int:
         return 0
     pr_ref = active_pr(ticket)
     if not pr_ref:
-        raise TicketError(f"{args.key} has no PR yet, so review {args.step} cannot be skipped")
+        raise TicketError(
+            f"{args.key} has no PR yet, so review {args.step} cannot be skipped"
+        )
     pr = inner.store.read_pr(pr_ref) or {
-        "pr": pr_ref, "key": args.key, "dispatched": [], "collected": [], "skipped": [],
+        "pr": pr_ref,
+        "key": args.key,
+        "dispatched": [],
+        "collected": [],
+        "skipped": [],
     }
     if args.step not in pr.setdefault("skipped", []):
         pr["skipped"].append(args.step)
@@ -392,8 +435,11 @@ def cmd_findings(args) -> int:
     severity_order = {"blocking": 0, "maintenance": 1, "architecture": 2}
     for finding in sorted(
         doc["findings"],
-        key=lambda f: (order.get(f.get("status"), 9),
-                       severity_order.get(f.get("severity"), 9), f["id"]),
+        key=lambda f: (
+            order.get(f.get("status"), 9),
+            severity_order.get(f.get("severity"), 9),
+            f["id"],
+        ),
     ):
         effort = finding.get("effort") or "-"
         print(
@@ -408,7 +454,9 @@ def cmd_reviews(args) -> int:
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
-    pr = inner.store.read_pr(pr_ref) or reviews_module.ensure_pr(inner.store, ticket, pr_ref)
+    pr = inner.store.read_pr(pr_ref) or reviews_module.ensure_pr(
+        inner.store, ticket, pr_ref
+    )
     if args.json:
         print(json.dumps(pr, indent=2))
         return 0
@@ -428,7 +476,9 @@ def cmd_reviews(args) -> int:
         print(f"  {review.id:<16} {review.dispatch:<6} {status}")
     others = [c for c in pr.get("collected") or [] if not c.get("review")]
     for other in others:
-        print(f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings), not ours")
+        print(
+            f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings), not ours"
+        )
     return 0
 
 
@@ -451,7 +501,9 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
     # not sync); only the store writes and the jira shell-out are skipped.
     if ctx.cfg.sync and ticket.get("worktree"):
         reason = gh.sync(Path(ticket["worktree"]))
-        print(f"{ticket['key']} sync: {reason}" if reason else f"{ticket['key']} synced")
+        print(
+            f"{ticket['key']} sync: {reason}" if reason else f"{ticket['key']} synced"
+        )
     prs = ticket.get("prs") or []
     if prs:
         pr_ref = prs[-1]
@@ -465,8 +517,12 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
         if dry_run:
             print(f"[dry-run] would refresh {ticket['key']} summary from jira")
         else:
-            summary = gh.run(["jira", "issue", "view", ticket["key"], "--plain"], retries=1)
-            ticket["summary"] = summary.strip().splitlines()[0] if summary.strip() else ""
+            summary = gh.run(
+                ["jira", "issue", "view", ticket["key"], "--plain"], retries=1
+            )
+            ticket["summary"] = (
+                summary.strip().splitlines()[0] if summary.strip() else ""
+            )
             ctx.store.write_ticket(ticket)
 
 
@@ -487,7 +543,11 @@ def cmd_reset(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
-    affected = downstream(inner.cfg, args.step) if args.step else [s.id for s in inner.cfg.steps]
+    affected = (
+        downstream(inner.cfg, args.step)
+        if args.step
+        else [s.id for s in inner.cfg.steps]
+    )
     if args.dry_run:
         print(f"[dry-run] would reset {', '.join(affected)} on {args.key}")
         return 0
@@ -519,7 +579,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ticket")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument(
-        "--no-sync", action="store_true",
+        "--no-sync",
+        action="store_true",
         help="skip the git fetch/fast-forward this normally does before every command",
     )
     parser.set_defaults(func=cmd_queue, dry_run=False, verb=None, no_sync=False)
@@ -533,7 +594,12 @@ def build_parser() -> argparse.ArgumentParser:
         # applies each parser's defaults into the shared namespace, so a plain
         # default=False here would silently override `ticket --no-sync collect
         # ...` or `ticket --json show ABC-1`).
-        p.add_argument("--no-sync", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        p.add_argument(
+            "--no-sync",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help=argparse.SUPPRESS,
+        )
         return p
 
     p = add("show", cmd_show, help="show one ticket")

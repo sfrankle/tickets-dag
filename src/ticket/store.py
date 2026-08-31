@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .errors import StoreError
@@ -28,7 +28,7 @@ def pr_slug(pr_ref: str) -> str:
 
 def now() -> str:
     """UTC timestamp in the form the store records everywhere."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Store:
@@ -49,7 +49,7 @@ class Store:
     def log_path(self, key: str, step: str) -> Path:
         directory = self.root / "logs" / key
         directory.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return directory / f"{step}-{stamp}.log"
 
     # --- io ------------------------------------------------------------

@@ -55,7 +55,10 @@ def ticket_doc(steps=None, prs=None):
 
 
 def done(*step_ids):
-    return {step_id: {"status": "done", "at": "2026-08-31T09:00:00Z"} for step_id in step_ids}
+    return {
+        step_id: {"status": "done", "at": "2026-08-31T09:00:00Z"}
+        for step_id in step_ids
+    }
 
 
 def post_pr():
@@ -82,10 +85,15 @@ def pr_doc(dispatched=(), collected=(), skipped=()):
 
 
 def findings_doc(*findings):
-    return {"pr": "acme/api#115", "next_id": len(findings) + 1, "findings": list(findings)}
+    return {
+        "pr": "acme/api#115",
+        "next_id": len(findings) + 1,
+        "findings": list(findings),
+    }
 
 
 # --- rule 4: the pre-PR walk ----------------------------------------------
+
 
 def test_empty_ticket_starts_at_the_first_step(cfg):
     action = next_action(cfg, ticket_doc(), None, None)
@@ -134,22 +142,28 @@ def test_review_rules_do_not_apply_before_the_ticket_has_a_pr(cfg):
 
 # --- rule 1: collect before anything else ---------------------------------
 
+
 def test_a_dispatched_uncollected_review_wins(cfg):
     ticket = ticket_doc(done("evaluate", "spec", "draft-pr"), prs=["acme/api#115"])
-    pr = pr_doc(dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}])
+    pr = pr_doc(
+        dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}]
+    )
     action = next_action(cfg, ticket, pr, None)
     assert (action.kind, action.target) == ("collect", "docs-tests")
 
 
 def test_collect_beats_an_open_finding(cfg):
     ticket = ticket_doc(done("evaluate", "spec", "draft-pr"), prs=["acme/api#115"])
-    pr = pr_doc(dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}])
+    pr = pr_doc(
+        dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}]
+    )
     findings = findings_doc({"id": "f01", "status": "open", "effort": "easy"})
     action = next_action(cfg, ticket, pr, findings)
     assert action.kind == "collect"
 
 
 # --- rule 2: open findings ------------------------------------------------
+
 
 def test_an_open_finding_beats_the_next_review(cfg):
     ticket = ticket_doc(done("evaluate", "spec", "draft-pr"), prs=["acme/api#115"])
@@ -168,7 +182,9 @@ def test_easy_findings_are_offered_before_hard_ones(cfg):
     ticket = ticket_doc(done("evaluate", "spec", "draft-pr"), prs=["acme/api#115"])
     pr = pr_doc(
         dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}],
-        collected=[{"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}],
+        collected=[
+            {"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}
+        ],
     )
     findings = findings_doc(
         {"id": "f01", "status": "open", "effort": "hard"},
@@ -182,7 +198,9 @@ def test_findings_with_no_effort_are_offered_last(cfg):
     ticket = ticket_doc(done("evaluate", "spec", "draft-pr"), prs=["acme/api#115"])
     pr = pr_doc(
         dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}],
-        collected=[{"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}],
+        collected=[
+            {"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}
+        ],
     )
     findings = findings_doc(
         {"id": "f01", "status": "open", "effort": None, "severity": "blocking"},
@@ -195,7 +213,9 @@ def test_resolved_and_wontfix_findings_are_ignored(cfg):
     ticket = ticket_doc(post_pr(), prs=["acme/api#115"])
     pr = pr_doc(
         dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}],
-        collected=[{"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}],
+        collected=[
+            {"source_id": "PRR_1", "review": "docs-tests", "findings": ["f01", "f02"]}
+        ],
     )
     findings = findings_doc(
         {"id": "f01", "status": "resolved", "commit": "4e91c02"},
@@ -206,6 +226,7 @@ def test_resolved_and_wontfix_findings_are_ignored(cfg):
 
 
 # --- rule 3: the next review ----------------------------------------------
+
 
 def test_the_first_review_is_offered_once_a_pr_exists(cfg):
     ticket = ticket_doc(post_pr(), prs=["acme/api#115"])
@@ -232,12 +253,22 @@ def test_a_skipped_review_is_walked_past(cfg):
 def test_a_collected_review_we_never_dispatched_does_not_count_as_ours(cfg):
     """oplane-bot is a source of findings, not one of our reviews."""
     ticket = ticket_doc(post_pr(), prs=["acme/api#115"])
-    pr = pr_doc(collected=[{"source_id": "IC_1", "review": None, "author": "oplane-bot", "findings": []}])
+    pr = pr_doc(
+        collected=[
+            {
+                "source_id": "IC_1",
+                "review": None,
+                "author": "oplane-bot",
+                "findings": [],
+            }
+        ]
+    )
     action = next_action(cfg, ticket, pr, None)
     assert (action.kind, action.target) == ("review", "docs-tests")
 
 
 # --- rule 5: at rest ------------------------------------------------------
+
 
 def test_everything_done_is_at_rest_with_a_reason(cfg):
     steps = done("evaluate", "spec", "draft-pr", "describe")
@@ -273,7 +304,9 @@ def test_collect_still_outranks_a_runnable_step(cfg):
     steps = done("evaluate", "spec", "draft-pr")
     steps["review-spec"] = {"status": "released"}
     ticket = ticket_doc(steps, prs=["acme/api#115"])
-    pr = pr_doc(dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}])
+    pr = pr_doc(
+        dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}]
+    )
     assert next_action(cfg, ticket, pr, None).kind == "collect"
 
 
@@ -297,14 +330,18 @@ def test_a_review_redispatched_after_the_head_moved_is_collected_again(cfg):
         collected=[{"source_id": "PRR_1", "review": "docs-tests", "findings": []}],
     )
     assert next_action(cfg, ticket, pr, None) == next_action(cfg, ticket, pr, None)
-    assert (next_action(cfg, ticket, pr, None).kind,
-            next_action(cfg, ticket, pr, None).target) == ("collect", "docs-tests")
+    assert (
+        next_action(cfg, ticket, pr, None).kind,
+        next_action(cfg, ticket, pr, None).target,
+    ) == ("collect", "docs-tests")
 
 
 def test_repo_overrides_change_the_walk(cfg, tmp_path):
     """A repo that skips `describe` must reach rest instead of offering it."""
     path = tmp_path / "override.yml"
-    path.write_text(CONFIG + "\nrepos:\n  acme/api:\n    steps:\n      skip: [describe]\n")
+    path.write_text(
+        CONFIG + "\nrepos:\n  acme/api:\n    steps:\n      skip: [describe]\n"
+    )
     from ticket.config import load_config as reload
 
     scoped = reload(path).for_repo("acme/api")

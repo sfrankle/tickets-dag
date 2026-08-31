@@ -41,6 +41,7 @@ def run(
             input=input_text,
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode == 0:
             return result.stdout
@@ -99,7 +100,9 @@ def sync(worktree: Path | None) -> str | None:
     try:
         if is_dirty(path):
             return "uncommitted changes; fetched but did not fast-forward"
-        run(["git", "merge", "--ff-only", "--quiet", "@{upstream}"], cwd=path, retries=1)
+        run(
+            ["git", "merge", "--ff-only", "--quiet", "@{upstream}"], cwd=path, retries=1
+        )
     except GhError:
         return "fetched, but could not fast-forward (no upstream, or diverged)"
     return None
@@ -107,7 +110,10 @@ def sync(worktree: Path | None) -> str | None:
 
 def pr_reviews(pr_ref: str) -> list[dict]:
     repo, number = split_ref(pr_ref)
-    raw = gh_json(["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--paginate"]) or []
+    raw = (
+        gh_json(["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--paginate"])
+        or []
+    )
     return [
         {
             "id": str(item["id"]),
@@ -121,7 +127,10 @@ def pr_reviews(pr_ref: str) -> list[dict]:
 
 def pr_comments(pr_ref: str) -> list[dict]:
     repo, number = split_ref(pr_ref)
-    raw = gh_json(["gh", "api", f"repos/{repo}/issues/{number}/comments", "--paginate"]) or []
+    raw = (
+        gh_json(["gh", "api", f"repos/{repo}/issues/{number}/comments", "--paginate"])
+        or []
+    )
     return [
         {
             "id": str(item["id"]),
