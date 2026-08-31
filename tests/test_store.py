@@ -122,3 +122,10 @@ def test_log_path_creates_its_directory(store):
     path = store.log_path("ABC-123", "evaluate")
     assert path.parent.is_dir()
     assert path.name.startswith("evaluate-")
+
+
+def test_a_finding_that_arrives_with_an_id_gets_a_minted_one(store):
+    """A parsed review body can carry an `id`; ids are minted here or nowhere."""
+    assigned = store.add_findings("acme/api#115", [{"id": "theirs", "summary": "x"}])
+    assert assigned == ["f01"]
+    assert store.read_findings("acme/api#115")["findings"][0]["id"] == "f01"

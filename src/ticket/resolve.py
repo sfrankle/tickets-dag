@@ -55,14 +55,18 @@ def _collected_ids(pr: dict) -> set[str]:
 def _uncollected(pr: dict) -> str | None:
     """A review can be re-dispatched once the head moves, so this counts rather
     than sets: the third dispatch of `docs-tests` is uncollected until a third
-    result has been recorded for it."""
+    result has been recorded for it.
+
+    Skipping is honoured here as well as in `_next_review`; otherwise skipping a
+    review after it was dispatched would wedge `next` on `collect` forever."""
     collected = Counter(
         c["review"] for c in pr.get("collected") or [] if c.get("review")
     )
+    skipped = set(pr.get("skipped") or [])
     seen: Counter = Counter()
     for dispatch in pr.get("dispatched") or []:
         review = dispatch.get("review")
-        if not review:
+        if not review or review in skipped:
             continue
         seen[review] += 1
         if seen[review] > collected[review]:

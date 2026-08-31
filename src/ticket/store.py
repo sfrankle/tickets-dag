@@ -121,9 +121,8 @@ class Store:
         for finding in findings:
             finding_id = f"f{doc['next_id']:02d}"
             doc["next_id"] += 1
-            record = {"id": finding_id, "status": "open", **finding}
-            record["id"] = finding_id
-            record.setdefault("status", "open")
+            # id last: a parsed finding carrying its own id must not keep it.
+            record = {"status": "open", **finding, "id": finding_id}
             doc["findings"].append(record)
             assigned.append(finding_id)
         self.write_findings(doc)

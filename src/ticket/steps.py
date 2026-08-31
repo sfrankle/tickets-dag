@@ -86,9 +86,14 @@ def _tee(
         stderr=subprocess.STDOUT,
         text=True,
     )
-    if stdin_text is not None:
-        process.stdin.write(stdin_text)
-    process.stdin.close()
+    try:
+        if stdin_text is not None:
+            process.stdin.write(stdin_text)
+        process.stdin.close()
+    except BrokenPipeError:
+        # The child exited without reading its prompt. Its output and exit code
+        # below are the real story; the failed write is not.
+        pass
     lines: list[str] = []
     for line in process.stdout:
         lines.append(line)

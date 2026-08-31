@@ -188,6 +188,13 @@ def test_missing_config_file_is_an_error(tmp_path):
         load_config(tmp_path / "absent.yml")
 
 
+def test_malformed_yaml_is_a_config_error_not_a_traceback(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text("steps: [\n  - id: evaluate\n")
+    with pytest.raises(ConfigError, match="not valid YAML"):
+        load_config(path)
+
+
 def test_a_cycle_in_needs_is_an_error(tmp_path):
     """`needs` describes a DAG; a cycle would otherwise surface as `at rest`."""
     bad = SAMPLE.replace(

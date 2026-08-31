@@ -212,6 +212,47 @@ def test_fix_without_wait_survives_a_missing_pr_document(env, fake_bin, capsys):
     assert f"{finding_id}:" in out
 
 
+def test_the_row_shows_open_finding_count(env, fake_bin, capsys):
+    from ticket.store import Store
+
+    started(fake_bin)
+    Store(env / "store").add_findings(
+        "acme/api#115",
+        [{"file": "a.py", "summary": "s", "severity": "blocking", "effort": "easy"}],
+    )
+    capsys.readouterr()
+    main(["ABC-123"])
+    assert "1 open" in capsys.readouterr().out
+
+
+def test_fix_wait_baselines_on_the_live_head(env, fake_bin, monkeypatch):
+    """The stored head is None for a PR we only ever collected from, and stale
+    once an earlier fix moved it. Either would make the wait return at once."""
+    from ticket import cli
+    from ticket.store import Store
+
+    started(fake_bin)
+    store = Store(env / "store")
+    finding_id = store.add_findings(
+        "acme/api#115",
+        [{"file": "a.py", "summary": "s", "severity": "maintenance", "effort": "easy"}],
+    )[0]
+    assert store.read_pr("acme/api#115") is None
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "aaa"}))
+
+    seen = {}
+
+    def fake_wait(pr_ref, before, **kwargs):
+        seen["before"] = before
+        return "bbb"
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", fake_wait)
+    assert main(["fix", "ABC-123", finding_id, "--wait"]) == 0
+
+    assert seen["before"] == "aaa"
+    assert store.read_pr("acme/api#115")["head"] == "bbb"
+
+
 def test_reset_clears_the_step_and_everything_below(env, fake_bin, capsys):
     started(fake_bin)
     main(["run", "describe", "ABC-123"])

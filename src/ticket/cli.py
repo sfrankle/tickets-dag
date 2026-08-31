@@ -131,7 +131,8 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
         return 0
     print(f"{row['key']}  {row['repo']}  {row['summary']}".rstrip())
     if row["pr"]:
-        print(f"PR: {row['pr']}")
+        findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
+        print(f"PR: {row['pr']}{findings}")
     for step in scoped(ctx, ticket).cfg.steps:
         status = (ticket.get("steps") or {}).get(step.id, {}).get("status", "-")
         print(f"  {step.id:<16} {status}")
@@ -384,9 +385,11 @@ def cmd_fix(args) -> int:
 
     for finding_id in targets:
         before = None
-        if args.wait:
-            pr_before = inner.store.read_pr(pr_ref)
-            before = pr_before.get("head") if pr_before else None
+        if args.wait and not args.dry_run:
+            # The live head, not the stored one: the stored value is None for a
+            # PR we have only ever collected from, and stale once an earlier fix
+            # moved the head. Either makes the wait below return immediately.
+            before = gh.pr_head(pr_ref)
         status = fix_module.fix_one(
             inner.cfg, inner.store, ticket, pr_ref, finding_id, dry_run=args.dry_run
         )
@@ -395,7 +398,9 @@ def cmd_fix(args) -> int:
             # The bot runs one action per PR and silently drops a second
             # dispatch, so wait for its commit before sending anything else.
             head = fix_module.wait_for_head(pr_ref, before)
-            pr = inner.store.read_pr(pr_ref)
+            # ensure_pr, not read_pr: the document does not exist yet when the
+            # finding came from a source we only ever collected.
+            pr = reviews_module.ensure_pr(inner.store, ticket, pr_ref)
             pr["head"] = head
             inner.store.write_pr(pr)
             fix_module.resolve_from_git(inner.cfg, inner.store, ticket, pr_ref)
@@ -552,7 +557,10 @@ def cmd_reset(args) -> int:
         print(f"[dry-run] would reset {', '.join(affected)} on {args.key}")
         return 0
     if not args.force:
-        answer = input(f"reset {', '.join(affected)} on {args.key}? [y/N] ")
+        try:
+            answer = input(f"reset {', '.join(affected)} on {args.key}? [y/N] ")
+        except EOFError:  # piped or cron: no one to answer, so decline
+            answer = ""
         if answer.strip().lower() not in ("y", "yes"):
             print("nothing reset")
             return 0

@@ -79,7 +79,15 @@ can be a one-line fix. Effort is set by Haiku at ingestion and overridden with
 Resolution is a `git log` scan for `Finding: fNN` trailers — one commit per
 finding, zero tokens, and it works for the bot's commits too.
 
-Design: `docs/specs/2026-08-31_ticket-spec.md`. Decisions and rejected
+**Trust boundary.** Findings are minted from PR reviews and PR comments, so
+their text is written by whoever can comment on the PR. That text is spliced
+into the `/edit` instruction sent to the gh bot, and into the prompt of the
+local Claude session that a `hard` fix runs — after which this commits whatever
+the session changed. A handoff's stdout is a control channel too: `ticket-pr:`
+registers a PR and `ticket-worktree:` sets the directory later commands run in.
+Run this against repos whose commenters you trust.
+
+Design: `docs/superpowers/specs/2026-08-31_ticket-v1.md`. Decisions and rejected
 alternatives: `docs/decisions.md`.
 
 ## Tests

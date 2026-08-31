@@ -350,3 +350,15 @@ def test_repo_overrides_change_the_walk(cfg, tmp_path):
     ticket = ticket_doc(steps, prs=["acme/api#115"])
     pr = pr_doc(skipped=["docs-tests", "architecture"])
     assert next_action(scoped, ticket, pr, None).kind == "rest"
+
+
+def test_skipping_a_review_after_it_was_dispatched_does_not_wedge_collect(cfg):
+    """Without this, `next` returns `collect docs-tests` forever and the only
+    way out is hand-editing the store."""
+    ticket = ticket_doc(post_pr(), prs=["acme/api#115"])
+    pr = pr_doc(
+        dispatched=[{"review": "docs-tests", "head": "9c1f0ab", "transport": "bot"}],
+        skipped=["docs-tests"],
+    )
+    action = next_action(cfg, ticket, pr, None)
+    assert (action.kind, action.target) == ("review", "architecture")

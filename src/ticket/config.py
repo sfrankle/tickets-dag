@@ -269,7 +269,10 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError(
             f"no config at {path}. Copy examples/config.yml to get started."
         )
-    raw = yaml.safe_load(path.read_text()) or {}
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} is not a YAML mapping")
 

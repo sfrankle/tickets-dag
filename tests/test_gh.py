@@ -38,6 +38,12 @@ def test_pr_head(fake_bin):
     assert "115" in call and "acme/api" in call
 
 
+def test_pr_head_reports_an_unexpected_shape_as_a_gh_error(fake_bin):
+    fake_bin.respond("gh pr view", stdout=json.dumps({"number": 115}))
+    with pytest.raises(GhError, match="headRefOid"):
+        gh.pr_head("acme/api#115")
+
+
 def test_pr_comment_posts_the_body(fake_bin):
     gh.pr_comment("acme/api#115", "hello world", dry_run=False)
     call = fake_bin.calls_to("gh")[0]

@@ -62,6 +62,8 @@ def gh_json(argv: list[str], **kwargs):
 def pr_head(pr_ref: str) -> str:
     repo, number = split_ref(pr_ref)
     data = gh_json(["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid"])
+    if not isinstance(data, dict) or not data.get("headRefOid"):
+        raise GhError(f"gh pr view {pr_ref} returned no headRefOid")
     return data["headRefOid"]
 
 
