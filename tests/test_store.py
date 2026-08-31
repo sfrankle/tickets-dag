@@ -84,6 +84,24 @@ def test_stored_json_is_human_readable(store):
     assert json.loads(text)["key"] == "ABC-123"
 
 
+def test_reading_corrupt_json_raises_store_error(store):
+    for relative in (
+        "tickets/ABC-123.json",
+        "prs/acme-api-pr115.json",
+        "findings/acme-api-pr115.json",
+    ):
+        path = store.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not valid json")
+
+    with pytest.raises(StoreError, match="not valid JSON"):
+        store.read_ticket("ABC-123")
+    with pytest.raises(StoreError, match="not valid JSON"):
+        store.read_pr("acme/api#115")
+    with pytest.raises(StoreError, match="not valid JSON"):
+        store.read_findings("acme/api#115")
+
+
 def test_lock_is_exclusive(store):
     with store.lock("ABC-123"):
         with pytest.raises(StoreError, match="ABC-123"):

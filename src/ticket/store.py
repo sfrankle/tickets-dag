@@ -143,8 +143,10 @@ class Store:
                 f"{key} is locked by another run ({path}). Remove it if that run died."
             ) from None
         try:
-            os.write(fd, f"{os.getpid()}\n".encode())
-            os.close(fd)
+            try:
+                os.write(fd, f"{os.getpid()}\n".encode())
+            finally:
+                os.close(fd)
             yield
         finally:
             path.unlink(missing_ok=True)
