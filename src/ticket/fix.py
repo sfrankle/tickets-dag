@@ -166,8 +166,10 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
             f"{worktree} has uncommitted changes. One commit per finding means "
             f"starting from a clean tree — commit or stash first."
         )
+    # `cfg.fix.args` is where agent mode goes. Without it the session can read
+    # but not write, and every hard fix ends in "changed nothing" below.
     completed = subprocess.run(
-        ["claude", "-p", "--model", cfg.model_id(cfg.default_model)],
+        ["claude", "-p", "--model", cfg.model_id(cfg.fix.model), *cfg.fix.args],
         cwd=str(worktree),
         input=prompt,  # stdin, not argv — decision #21
         capture_output=True,

@@ -66,6 +66,13 @@ steps:
     prompt: prompts/describe.md
     needs: [draft-pr]
 
+# The local session a `hard` finding gets. Not a step — a fix is not in the
+# DAG — but it is a handoff that has to write files, so it needs agent mode
+# for the same reason `implement` does. `model:` defaults to defaults.model.
+fix:
+  model: opus
+  args: [--permission-mode, acceptEdits]
+
 # Only the AI reviews we dispatch. Required repo bots (oplane-bot's security
 # review), other required agent reviews, and humans are never listed here —
 # they are collected as sources of findings, not as reviews we fire.

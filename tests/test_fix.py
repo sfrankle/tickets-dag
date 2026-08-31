@@ -250,6 +250,22 @@ def test_a_hard_finding_uses_the_default_model(cfg, store, worktree, fake_bin):
     assert "claude-opus-5" in fake_bin.calls_to("claude")[0]
 
 
+def test_a_hard_fix_passes_the_fix_blocks_args(
+    cfg, store, worktree, fake_bin, tmp_path
+):
+    """Without agent mode the session cannot write, so every hard fix would end
+    in "changed nothing" — see `fix:` in examples/config.yml."""
+    path = tmp_path / "with-fix.yml"
+    path.write_text(
+        CONFIG + "fix:\n  model: haiku\n  args: [--permission-mode, acceptEdits]\n"
+    )
+    seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
+    fix_one(load_config(path), store, ticket_doc(worktree), "acme/api#115", "f01")
+    argv = fake_bin.calls_to("claude")[0]
+    assert "claude-haiku-4-5-20251001" in argv
+    assert argv[-2:] == ["--permission-mode", "acceptEdits"]
+
+
 def test_a_hard_fix_refuses_a_dirty_tree(cfg, store, worktree, fake_bin):
     """One commit per finding: `git add -A` would sweep in unrelated work."""
     seed(store, {"summary": "retry loop unbounded", "effort": "hard"})

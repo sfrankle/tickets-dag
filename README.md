@@ -74,7 +74,10 @@ opts out.
 (`easy`/`hard`) says how contained the fix is: `easy` goes back to the gh Claude
 bot as an `/edit` comment, `hard` gets a local Claude session. A blocking finding
 can be a one-line fix. Effort is set by Haiku at ingestion and overridden with
-`ticket effort`; it is never derived from severity.
+`ticket effort`; it is never derived from severity. The local session a `hard`
+fix runs is configured under `fix:` — `model:` (defaults to `defaults.model`)
+and `args:`, which is where agent mode goes. Without it the session can read
+but not write, and every hard fix ends in "changed nothing".
 
 Resolution is a `git log` scan for `Finding: fNN` trailers — one commit per
 finding, zero tokens, and it works for the bot's commits too.

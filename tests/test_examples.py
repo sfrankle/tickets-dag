@@ -41,6 +41,12 @@ def test_the_implement_step_can_write_files():
     assert "--permission-mode" in cfg.step("implement").args
 
 
+def test_the_example_fix_block_can_write_files():
+    """A hard fix is a handoff that edits code, so it needs agent mode too."""
+    cfg = load_config(EXAMPLES / "config.yml")
+    assert "--permission-mode" in cfg.fix.args
+
+
 def test_the_worktree_script_honours_the_worktree_setting():
     text = (EXAMPLES / "scripts" / "worktree.sh").read_text()
     assert "TICKET_USE_WORKTREES" in text

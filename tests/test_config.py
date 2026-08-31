@@ -188,6 +188,20 @@ def test_missing_config_file_is_an_error(tmp_path):
         load_config(tmp_path / "absent.yml")
 
 
+def test_fix_defaults_to_the_default_model_with_no_args(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(SAMPLE)
+    cfg = load_config(path)
+    assert (cfg.fix.model, cfg.fix.args) == ("opus", ())
+
+
+def test_an_unknown_fix_model_fails_at_load(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(SAMPLE + "\nfix:\n  model: sonnet\n")
+    with pytest.raises(ConfigError, match=r"fix\.model"):
+        load_config(path)
+
+
 def test_malformed_yaml_is_a_config_error_not_a_traceback(tmp_path):
     path = tmp_path / "config.yml"
     path.write_text("steps: [\n  - id: evaluate\n")

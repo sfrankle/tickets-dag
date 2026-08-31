@@ -74,6 +74,20 @@ class Review:
 
 
 @dataclass(frozen=True)
+class Fix:
+    """How a `hard` fix runs its local session.
+
+    Separate from any step: a fix is not in the DAG, but it is a handoff that
+    has to write files, so it needs the same model and argv knobs — agent mode
+    above all. Keying it off a step id would put a step name back in the
+    engine.
+    """
+
+    model: str | None = None
+    args: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     store: Path  # where state lives; defaults to `root` (decision #24)
     root: Path  # the config file's directory; every relative path anchors here
@@ -84,6 +98,7 @@ class Config:
     repos: dict[str, dict]
     worktrees: Worktrees
     sync: bool
+    fix: Fix = Fix()
 
     def model_id(self, alias: str) -> str:
         try:
@@ -263,6 +278,19 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
     return tuple(sorted(reviews, key=lambda r: (r.order, r.id)))
 
 
+def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
+    if not isinstance(raw, dict):
+        raise ConfigError("fix: must be a mapping with model: and/or args:")
+    model = raw.get("model") or default_model
+    if not model:
+        raise ConfigError("fix: has no model: and there is no defaults.model")
+    # Eagerly, like defaults.model: a typo here should fail at load, not
+    # halfway through the one command that spends an Opus session.
+    if model not in models:
+        raise ConfigError(f"fix.model is {model!r}, which is not in models:")
+    return Fix(model=model, args=tuple(raw.get("args") or ()))
+
+
 def load_config(path: Path | None = None) -> Config:
     path = (path or config_path()).expanduser()
     if not path.is_file():
@@ -306,6 +334,7 @@ def load_config(path: Path | None = None) -> Config:
             branch=wt.get("branch") or "{key}",
         ),
         sync=bool(raw.get("sync", True)),
+        fix=_load_fix(raw.get("fix") or {}, default_model, models),
     )
     # Validate every repo override eagerly, not just the ones a given run
     # happens to call `for_repo` on: a bad repos: entry should fail at load
