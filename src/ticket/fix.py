@@ -144,6 +144,15 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
         summary=finding.get("summary", ""),
         body=finding.get("body", ""),
     )
+    # Sync first so the local session reads and commits against the same head
+    # the PR shows (decision #22). This runs even on a dry run: a dry run
+    # must not post/write, but it should still fetch to keep the checkout
+    # fresh — --no-sync is sync's opt-out, deliberately separate from
+    # --dry-run.
+    if cfg.sync:
+        reason = gh.sync(worktree)
+        if reason:
+            print(f"sync: {reason}")
     if dry_run:
         print(f"[dry-run] would run a local session for {finding['id']}")
         return

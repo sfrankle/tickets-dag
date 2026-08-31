@@ -102,6 +102,28 @@ def test_scan_trailers_ignores_commits_without_one(worktree):
     assert scan_trailers(worktree) == {}
 
 
+def test_scan_trailers_newest_commit_wins(worktree):
+    """When two commits carry the same finding trailer, `git log`'s
+    combined-revision ordering means the newest one wins."""
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "fix: first attempt", "-m", "Finding: f01"],
+        cwd=worktree, check=True, capture_output=True,
+    )
+    older = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "fix: better attempt", "-m", "Finding: f01"],
+        cwd=worktree, check=True, capture_output=True,
+    )
+    newer = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    found = scan_trailers(worktree)
+    assert found["f01"] == newer
+    assert found["f01"] != older
+
+
 def test_resolve_from_git_marks_findings_resolved(cfg, store, worktree):
     seed(store, {"summary": "a", "effort": "easy"})
     subprocess.run(
@@ -168,6 +190,27 @@ def test_a_hard_fix_that_changes_nothing_is_reported_not_crashed(cfg, store, wor
     seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
     fake_bin.respond("git commit", exit_code=1, stderr="nothing to commit, working tree clean")
     assert fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01") == "open"
+
+
+def test_a_hard_fix_syncs_before_running_the_session(cfg, store, worktree, fake_bin):
+    """Decision #22: gh.sync runs before every command that reads a checkout.
+    A stale worktree must not feed a hard-fix session outdated code."""
+    seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
+    fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
+    fetch_index = next(
+        i for i, c in enumerate(fake_bin.calls) if c[0] == "git" and c[1:2] == ["fetch"]
+    )
+    claude_index = next(i for i, c in enumerate(fake_bin.calls) if c[0] == "claude")
+    assert fetch_index < claude_index
+
+
+def test_a_hard_fix_dry_run_still_syncs(cfg, store, worktree, fake_bin):
+    """--no-sync is sync's opt-out, deliberately separate from --dry-run
+    (decision #22) -- a dry run must not post/write but should still fetch."""
+    seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
+    fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01", dry_run=True)
+    assert [c for c in fake_bin.calls if c[0] == "git" and c[1:2] == ["fetch"]] != []
+    assert fake_bin.calls_to("claude") == []
 
 
 def test_resolution_fetches_before_scanning(cfg, store, worktree, fake_bin):
