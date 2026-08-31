@@ -219,7 +219,8 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"{step.id} {result.status}")
+        if result.status != "dry-run":
+            print(f"{step.id} {result.status}")
         return 0
     if action.kind == "review":
         review = ctx.cfg.review(action.target)
@@ -275,7 +276,8 @@ def cmd_run(args) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"{step.id} {result.status}")
+    if result.status != "dry-run":
+        print(f"{step.id} {result.status}")
     return 0
 
 

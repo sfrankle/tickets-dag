@@ -205,7 +205,7 @@ def test_dry_run_executes_nothing_and_records_nothing(cfg, store, fake_bin):
     write_script(cfg, "draft-pr.sh", "echo working\n")
     ticket = ticket_doc()
     result = run_step(cfg, store, ticket, cfg.step("draft-pr"), dry_run=True)
-    assert result.status == "done"
+    assert result.status == "dry-run"
     assert ticket["steps"] == {}
     assert store.read_ticket("ABC-123") is None
 

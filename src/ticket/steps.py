@@ -120,7 +120,9 @@ def run_step(
     argv, stdin_text = _argv(cfg, step)
     if dry_run:
         print(f"[dry-run] would run {step.id}: {' '.join(argv[:2])}")
-        return StepResult("done")
+        # Not "done": nothing ran and nothing was written, and a caller that
+        # printed the status would otherwise report the step as complete.
+        return StepResult("dry-run")
 
     # Fetch first. The bot commits on the remote, so the checkout drifts
     # constantly and a stale one makes trailer scanning lie.

@@ -141,7 +141,12 @@ def test_skip_resolves_a_review_id_when_it_is_not_a_step(env, capsys):
 
 def test_dry_run_changes_nothing(env, capsys, fake_bin):
     main(["track", "ABC-123", "--repo", "acme/api"])
+    capsys.readouterr()
     main(["next", "ABC-123", "--dry-run"])
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    # "evaluate done" would say the step ran, on the one path that runs nothing.
+    assert "done" not in out
     assert fake_bin.calls == []
     main(["ABC-123"])
     assert "evaluate" in capsys.readouterr().out
