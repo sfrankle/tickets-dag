@@ -128,7 +128,8 @@ registers a PR and `ticket-worktree:` sets the directory later commands run in.
 Run this against repos whose commenters you trust.
 
 Design notes, the decision log, and rejected alternatives:
-[v1: notes](https://github.com/sfrankle/tickets-dag/wiki/v1:-notes) in the wiki.
+[v1: release notes](https://github.com/sfrankle/tickets-dag/wiki/v1:-release-notes)
+in the wiki.
 
 ## Tests
 
