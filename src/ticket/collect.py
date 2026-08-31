@@ -1,0 +1,144 @@
+"""Fetch reviews and comments from gh, dedupe, hand bodies to the parser.
+
+Dedupe is on the GitHub review/comment id, so collection is idempotent and safe
+to run repeatedly. Sources we did not dispatch — humans, oplane-bot, other
+required agents — are recorded with `review: null` and an author. They are
+tracked fully; they are simply not in the config.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from pathlib import Path
+
+from . import gh
+from .effort import assign_effort
+from .config import Config
+from .parse import parse_haiku, parse_script
+from .reviews import ensure_pr
+from .store import Store, now
+
+DISPATCH_RE = re.compile(r"^/review\s+(\S+)", re.MULTILINE)
+
+
+def _is_our_dispatch_comment(body: str) -> bool:
+    """Our own `/review <id>` request is a request, not a result."""
+    return bool(DISPATCH_RE.match(body.lstrip()))
+
+
+def next_uncollected(pr: dict) -> str | None:
+    """The earliest review we dispatched that has no result recorded yet.
+
+    Counted, not set-compared: a review re-dispatched after the head moved is
+    uncollected again until a further result has been recorded for it.
+    """
+    collected = Counter(c["review"] for c in pr.get("collected") or [] if c.get("review"))
+    seen: Counter = Counter()
+    for dispatch in pr.get("dispatched") or []:
+        review = dispatch.get("review")
+        if not review:
+            continue
+        seen[review] += 1
+        if seen[review] > collected[review]:
+            return review
+    return None
+
+
+def _fingerprint(finding: dict) -> tuple[str, str]:
+    return (finding.get("file") or "", (finding.get("summary") or "").strip())
+
+
+def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[dict]:
+    """oplane-bot posts on every push and a re-run review repeats its unfixed
+    items, so the same finding arrives again under a new source id."""
+    known = {_fingerprint(f) for f in store.read_findings(pr_ref)["findings"]}
+    fresh = []
+    for finding in findings:
+        mark = _fingerprint(finding)
+        if mark in known:
+            continue
+        known.add(mark)
+        fresh.append(finding)
+    return fresh
+
+
+def collect(
+    cfg: Config,
+    store: Store,
+    ticket: dict,
+    pr_ref: str,
+    *,
+    dry_run: bool = False,
+) -> list[dict]:
+    pr = ensure_pr(store, ticket, pr_ref)
+    seen = {c["source_id"] for c in pr.get("collected") or []}
+
+    # Fetch before reading the PR: the whole point of collecting is to act on
+    # commits and comments made elsewhere.
+    if cfg.sync and ticket.get("worktree"):
+        reason = gh.sync(Path(ticket["worktree"]))
+        if reason:
+            print(f"sync: {reason}")
+
+    sources = [
+        {"kind": "review", **item} for item in gh.pr_reviews(pr_ref)
+    ] + [
+        {"kind": "comment", **item} for item in gh.pr_comments(pr_ref)
+    ]
+
+    added: list[dict] = []
+    for source in sources:
+        if source["id"] in seen:
+            continue
+        if not source["body"].strip():
+            continue
+        if _is_our_dispatch_comment(source["body"]):
+            continue
+
+        # The reviews we dispatch emit our known format. A body the script
+        # parser recognises is therefore one of ours; anything that falls back
+        # to Haiku is not, and is recorded with review: null.
+        script_findings = parse_script(source["body"])
+        review_id = next_uncollected(pr) if script_findings is not None else None
+
+        if dry_run:
+            # Stop before the parser: a dry run must not spend a Haiku call on
+            # parsing or on estimating effort.
+            print(f"[dry-run] would collect {source['id']} from {source['author']}")
+            added.append({
+                "source_id": source["id"], "review": review_id,
+                "author": source["author"], "at": now(), "findings": [],
+            })
+            continue
+
+        findings = script_findings
+        if findings is None:
+            findings = parse_haiku(cfg, source["body"])
+        findings = _drop_duplicates(store, pr_ref, findings)
+        assign_effort(cfg, findings)
+        for finding in findings:
+            finding["source"] = {
+                "kind": source["kind"],
+                "review": review_id,
+                "source_id": source["id"],
+            }
+
+        record = {
+            "source_id": source["id"],
+            "review": review_id,
+            "author": source["author"],
+            "at": now(),
+            "findings": [],
+        }
+
+        record["findings"] = store.add_findings(pr_ref, findings)
+        pr.setdefault("collected", []).append(record)
+        # Written per source, not once at the end: a failure on a later source
+        # must not leave earlier findings minted with no collection record,
+        # which would re-ingest and duplicate them on the next run.
+        store.write_pr(pr)
+        seen.add(source["id"])
+        added.append(record)
+
+    return added
