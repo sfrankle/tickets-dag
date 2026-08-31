@@ -1,11 +1,10 @@
 Review this PR for documentation and test coverage only.
 
-Look for: claims in docs the code contradicts, documented flags or options that
-no longer exist, behaviour changed without a test, tests that assert the
-implementation rather than the behaviour.
+Look for: claims in docs the code contradicts, documented flags or options that no longer exist, behaviour changed without a test, tests that assert the implementation rather than the behaviour.
 
 Report in exactly this format:
 
+```md
 <details>
 <summary>🔴 Blocking</summary>
 
@@ -28,6 +27,7 @@ None.
 </details>
 
 **Verdict:** approved | changes requested
+```
 
 Severity is importance, not effort: it says how much the finding matters, not
 how hard it is to fix. 🔴 blocking, 🟡 maintenance, 🔵 architecture. A one-line
