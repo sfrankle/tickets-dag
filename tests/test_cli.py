@@ -70,6 +70,7 @@ def test_bare_ticket_prints_the_queue(env, capsys):
 
 def test_queue_json_is_machine_readable(env, capsys):
     main(["track", "ABC-123", "--repo", "acme/api"])
+    capsys.readouterr()
     main(["--json"])
     rows = json.loads(capsys.readouterr().out)
     assert rows[0]["key"] == "ABC-123"

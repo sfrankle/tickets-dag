@@ -131,12 +131,7 @@ def cmd_track(args) -> int:
     ticket["tracked"] = True
     ticket.setdefault("summary", "")
     ctx.store.write_ticket(ticket)
-    # No confirmation print here: `main()` mixes stdout across calls within a
-    # process (the CLI tests call `main()` directly, back to back, without an
-    # intervening `capsys.readouterr()`), and a "tracking ..." message would
-    # land in front of whatever the next command prints — including the next
-    # `--json` queue, which must be the only thing on stdout to stay machine
-    # readable. `ticket <KEY>` right after `track` shows the result instead.
+    print(f"tracking {key} in {args.repo}")
     return 0
 
 
@@ -201,6 +196,9 @@ def cmd_skip(args) -> int:
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     known_steps = {s.id for s in inner.cfg.steps}
+    known_reviews = {r.id for r in inner.cfg.reviews}
+    if args.step not in known_steps and args.step not in known_reviews:
+        raise TicketError(f"unknown step or review: {args.step}")
     if args.dry_run:
         print(f"[dry-run] would skip {args.step} on {args.key}")
         return 0
@@ -213,20 +211,17 @@ def cmd_skip(args) -> int:
         inner.store.write_ticket(ticket)
         print(f"skipped step {args.step}")
         return 0
-    known_reviews = {r.id for r in inner.cfg.reviews}
-    if args.step in known_reviews:
-        pr_ref = active_pr(ticket)
-        if not pr_ref:
-            raise TicketError(f"{args.key} has no PR yet, so review {args.step} cannot be skipped")
-        pr = inner.store.read_pr(pr_ref) or {
-            "pr": pr_ref, "key": args.key, "dispatched": [], "collected": [], "skipped": [],
-        }
-        if args.step not in pr.setdefault("skipped", []):
-            pr["skipped"].append(args.step)
-        inner.store.write_pr(pr)
-        print(f"skipped review {args.step} on {pr_ref}")
-        return 0
-    raise TicketError(f"unknown step or review: {args.step}")
+    pr_ref = active_pr(ticket)
+    if not pr_ref:
+        raise TicketError(f"{args.key} has no PR yet, so review {args.step} cannot be skipped")
+    pr = inner.store.read_pr(pr_ref) or {
+        "pr": pr_ref, "key": args.key, "dispatched": [], "collected": [], "skipped": [],
+    }
+    if args.step not in pr.setdefault("skipped", []):
+        pr["skipped"].append(args.step)
+    inner.store.write_pr(pr)
+    print(f"skipped review {args.step} on {pr_ref}")
+    return 0
 
 
 def cmd_release(args) -> int:
