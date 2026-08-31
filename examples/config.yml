@@ -1,0 +1,98 @@
+# Copy to ~/.ticket/config.yml and edit. $TICKET_CONFIG overrides the location.
+# store: defaults to this file's own directory, so moving the config moves the
+# state with it. Set it only to split the two apart. Relative values, here and
+# in worktrees.root, resolve against this file's directory, not the cwd.
+store: ~/.ticket
+
+models:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+  haiku: claude-haiku-4-5-20251001
+
+defaults:
+  model: opus
+
+# git fetch (and a fast-forward when one is possible) before anything that reads
+# a checkout. Cheap, and the gh bot commits on the remote. `--no-sync` opts out.
+sync: true
+
+# A checkout per ticket, or work in the clone itself on a branch.
+worktrees:
+  enabled: true
+  root: ~/worktrees
+  branch: "{key}"           # {key} {repo} {owner} {name}
+
+steps:
+  - id: evaluate
+    model: opus
+    prompt: prompts/evaluate.md
+
+  - id: spec
+    model: opus
+    prompt: prompts/spec.md
+    needs: [evaluate]
+
+  - id: review-spec
+    gate: true
+    needs: [spec]
+
+  - id: plan
+    model: opus
+    prompt: prompts/plan.md
+    needs: [review-spec]
+
+  - id: review-plan
+    gate: true
+    needs: [plan]
+
+  - id: worktree
+    run: scripts/worktree.sh
+    needs: [review-plan]
+
+  - id: implement
+    model: opus
+    prompt: prompts/implement.md
+    needs: [worktree]
+    # `args:` is appended to the claude argv. This is where agent mode goes —
+    # a handoff that has to write files needs it.
+    args: [--permission-mode, acceptEdits]
+
+  - id: draft-pr
+    run: scripts/draft-pr.sh
+    needs: [implement]
+
+  - id: describe
+    model: haiku
+    prompt: prompts/describe.md
+    needs: [draft-pr]
+
+# Only the AI reviews we dispatch. Required repo bots (oplane-bot's security
+# review), other required agent reviews, and humans are never listed here —
+# they are collected as sources of findings, not as reviews we fire.
+reviews:
+  - id: docs-tests
+    order: 1
+    dispatch: bot
+    prompt: prompts/reviews/docs-tests.md
+
+  - id: architecture
+    order: 2
+    dispatch: local
+    model: opus
+    prompt: prompts/reviews/architecture.md
+
+  - id: security
+    order: 3
+    dispatch: local
+    model: opus
+    prompt: prompts/reviews/security.md
+
+# Shallow overrides. `reviews:` replaces the list; `steps.skip:` subtracts.
+repos:
+  acme/api:
+    path: ~/code/api          # the clone worktrees are added from
+    reviews: [docs-tests]
+  acme/infra:
+    path: ~/code/infra
+    steps:
+      skip: [describe]
