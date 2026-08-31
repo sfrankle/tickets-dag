@@ -91,8 +91,8 @@ the session changed. A handoff's stdout is a control channel too: `ticket-pr:`
 registers a PR and `ticket-worktree:` sets the directory later commands run in.
 Run this against repos whose commenters you trust.
 
-Design: `docs/superpowers/specs/2026-08-31_ticket-v1.md`. Decisions and rejected
-alternatives: `docs/decisions.md`.
+Design notes, the decision log, and rejected alternatives:
+[v1: notes](https://github.com/sfrankle/tickets-dag/wiki/v1:-notes) in the wiki.
 
 ## Tests
 
