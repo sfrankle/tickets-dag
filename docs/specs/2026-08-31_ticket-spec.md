@@ -223,17 +223,21 @@ Findings get a short sequential id per PR: `f01`, `f02`, … Ids are stable once
 assigned, human-typable, and never reused. Each finding records the source it
 came from (review id, GitHub comment id, or `local`).
 
-### Class and routing
+### Effort and routing
 
-`fix` routes on the finding's class rather than accepting one as an argument. An
+`fix` routes on the finding's effort rather than accepting one as an argument. An
 `easy` finding goes back to the gh bot as an `/edit` comment and the bot commits;
 a `hard` one gets a local Claude session and the script commits. Letting a caller
 send a hard finding to `/edit` fails quietly — it produces a minimal diff that
-misses the point — so the class is a property of the finding, not of the call.
+misses the point — so the effort is a property of the finding, not of the call.
 
-Default class is derived from severity by rule (🔵/🟡 → `easy`, 🔴 → `hard`) and
-can be overridden per finding with `ticket class <KEY> <id> hard`. See §8 for the
-open question here.
+Effort is `easy` or `hard`: `easy` means the gh bot can make the change from an
+`/edit` comment, `hard` means it needs a local Claude session. It is a question
+about how contained the fix is, and it is **never derived from severity** —
+severity says how important a finding is, and a 🔴 can be a one-line fix while a
+🔵 can be a rewrite. Haiku sets it at ingestion (decision #16); a finding it
+cannot judge is stored with `effort: null` and refused by `fix` until
+`ticket effort <KEY> <id> hard` sets one by hand (decision #18).
 
 ### Ordering constraint on fixes
 
@@ -321,7 +325,7 @@ It is tracked fully; it is simply not in the config.
     {
       "id": "f01",
       "severity": "maintenance",
-      "class": "easy",
+      "effort": "easy",
       "file": "workflows/manifest-status-update.md",
       "summary": "Degradation claim contradicts collect.team-prs",
       "body": "...",
@@ -404,9 +408,9 @@ Three dispatch rules carry over from v1 and still hold:
 | --- | --- |
 | `ticket review <KEY> [id]` | dispatch one review; default is next in `order` |
 | `ticket collect <KEY>` | ingest reviews and comments the store has not seen |
-| `ticket fix <KEY> [id]` | work findings, one commit each, routed by class |
+| `ticket fix <KEY> [id]` | work findings, one commit each, routed by effort |
 | `ticket decide <KEY> <id>` | close a finding as `wontfix` with a reason |
-| `ticket class <KEY> <id> <class>` | override a finding's class |
+| `ticket effort <KEY> <id> <easy\|hard>` | override a finding's effort |
 
 ### Flags
 
@@ -459,7 +463,7 @@ Each has one job, a stated interface, and can be tested without the others.
 | `reviews.py` | Dispatch a review over either transport |
 | `collect.py` | Fetch from `gh`, dedupe, hand bodies to the parser |
 | `parse.py` | Review body → findings. Script path plus Haiku fallback. |
-| `fix.py` | Route a finding by class, enforce ordering, verify the trailer landed |
+| `fix.py` | Route a finding by effort, enforce ordering, verify the trailer landed |
 | `cli.py` | Argument parsing and output formatting only. No logic. |
 
 `resolve.py` being a pure function of stored state is the load-bearing choice: it
@@ -489,12 +493,15 @@ network, no git, and no model.
 
 ## 8. Open questions
 
-1. **Finding class defaults.** Deriving `easy`/`hard` from severity is a guess.
+1. ~~**Finding effort defaults.**~~ **Closed** — see decisions #16, #18, #19.
+   Deriving `easy`/`hard` from severity is a guess.
    A 🟡 finding can need real work and a 🔴 can be a one-line fix. Options: keep
-   the severity rule and correct by hand with `ticket class`; let the review
-   prompt emit an explicit class per finding, which costs nothing since we
-   control the prompt; or classify with Haiku at ingestion. The middle option
-   looks best and should be settled before `fix` is built.
+   the severity rule and correct by hand with `ticket effort`; let the review
+   prompt emit an explicit effort per finding, which costs nothing since we
+   control the prompt; or have Haiku judge it at ingestion. **Resolved: Haiku at
+   ingestion**, because severity and effort are orthogonal and the sources we do
+   not author (`oplane-bot`, humans) never emit an effort of their own. The field
+   was called `class` in earlier drafts and is now `effort` (decision #19).
 2. **`ticket auto`.** v1 had an unattended walk of every row. Deferred until the
    attended path is proven, since an unattended run that mis-routes a hard
    finding to the bot wastes a round trip and muddies the PR.
@@ -512,5 +519,5 @@ network, no git, and no model.
 3. `cli.py` with `ticket`, `ticket <KEY>`, `next`, `run`, `skip`, `release`.
 4. `reviews.py` and `collect.py` — dispatch and ingest, the parts that work today.
 5. `parse.py`, script path first, Haiku fallback second.
-6. `fix.py`, once the class question in §8 is settled.
+6. `fix.py`, now that the effort question in §8 is settled.
 7. `refresh`, `reset`, `track`, `open`, and the flags.

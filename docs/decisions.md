@@ -24,8 +24,9 @@ Status: **firm** (settled, would need a real reason to reopen) ·
 | 13 | 2026-08-31 | Model naming | Alias in config (`opus`) | Full model ID | New release is a one-line edit | firm |
 | 14 | 2026-08-31 | Finding class | Derived from severity, overridable | Explicit class from the review prompt; Haiku at ingestion | Placeholder only — blocks `fix.py` | superseded by #16 |
 | 15 | 2026-08-31 | `ticket auto` | Deferred | Build now | Unattended mis-routing wastes a bot round trip and muddies the PR | provisional |
-| 16 | 2026-08-31 | Finding class | Haiku classifies at ingestion | Severity rule; explicit class from review prompt | Severity (🔴/🟡/🔵) is importance, not effort, so it cannot imply `easy`/`hard` at all. Haiku is uniform across sources we don't author (`oplane-bot`, humans). Supersedes #14 | firm |
-| 18 | 2026-08-31 | Unclassifiable findings | Store `class: null`; `fix` refuses to route until `ticket class` sets one | Fall back to a severity rule | Same reason as #16 — a severity fallback would silently send an important-but-large finding to the bot | firm |
+| 16 | 2026-08-31 | Finding effort | Haiku judges it at ingestion | Severity rule; explicit value from review prompt | Severity (🔴/🟡/🔵) is importance, not effort, so it cannot imply `easy`/`hard` at all. Haiku is uniform across sources we don't author (`oplane-bot`, humans). Supersedes #14 | firm |
+| 18 | 2026-08-31 | Findings Haiku can't judge | Store `effort: null`; `fix` refuses to route until `ticket effort` sets one | Fall back to a severity rule | Same reason as #16 — a severity fallback would silently send an important-but-large finding to the bot | firm |
+| 19 | 2026-08-31 | Name of the routing field | `effort` (`ticket effort`, `effort.py`) | `class` | `class` reads as an OOP class and shadows the Python keyword; `effort` says what the field measures | firm |
 | 17 | 2026-08-31 | Bot transport on this machine | `dispatch: bot` builds and posts the comment, nothing more; tested against a fake `gh` | Integrate against the real bot | The custom gh Claude bot is work-only and unavailable here; config and example prompts ship as templates configured on the work laptop | firm |
 
 ## #1 — Why Dagu was rejected
