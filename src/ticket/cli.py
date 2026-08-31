@@ -440,9 +440,11 @@ def cmd_open(args) -> int:
     return 0
 
 
-def _refresh_one(ctx: Context, ticket: dict) -> None:
+def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
     # Refresh is the one verb whose whole job is being in sync, so it fetches
-    # first and reports what it could not fast-forward.
+    # first and reports what it could not fast-forward. Sync/fetch runs even
+    # under --dry-run (decision #22: dry-run gates writes and model calls,
+    # not sync); only the store writes and the jira shell-out are skipped.
     if ctx.cfg.sync and ticket.get("worktree"):
         reason = gh.sync(Path(ticket["worktree"]))
         print(f"{ticket['key']} sync: {reason}" if reason else f"{ticket['key']} synced")
@@ -451,22 +453,28 @@ def _refresh_one(ctx: Context, ticket: dict) -> None:
         pr_ref = prs[-1]
         pr = reviews_module.ensure_pr(ctx.store, ticket, pr_ref)
         pr["head"] = gh.pr_head(pr_ref)
-        ctx.store.write_pr(pr)
+        if dry_run:
+            print(f"[dry-run] would write pr {pr_ref} (head {pr['head']})")
+        else:
+            ctx.store.write_pr(pr)
     if shutil.which("jira"):
-        summary = gh.run(["jira", "issue", "view", ticket["key"], "--plain"], retries=1)
-        ticket["summary"] = summary.strip().splitlines()[0] if summary.strip() else ""
-        ctx.store.write_ticket(ticket)
+        if dry_run:
+            print(f"[dry-run] would refresh {ticket['key']} summary from jira")
+        else:
+            summary = gh.run(["jira", "issue", "view", ticket["key"], "--plain"], retries=1)
+            ticket["summary"] = summary.strip().splitlines()[0] if summary.strip() else ""
+            ctx.store.write_ticket(ticket)
 
 
 def cmd_refresh(args) -> int:
     ctx = Context.load()
     if args.key:
-        _refresh_one(ctx, load_ticket(ctx, args.key))
+        _refresh_one(ctx, load_ticket(ctx, args.key), dry_run=args.dry_run)
         print(f"refreshed {args.key}")
         return 0
     for ticket in ctx.store.list_tickets():
         if ticket.get("tracked"):
-            _refresh_one(ctx, ticket)
+            _refresh_one(ctx, ticket, dry_run=args.dry_run)
     print("refreshed every tracked row")
     return 0
 
@@ -598,6 +606,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("refresh", cmd_refresh, help="refresh gh and Jira state")
     p.add_argument("key", nargs="?")
+    p.add_argument("--dry-run", action="store_true")
 
     p = add("reset", cmd_reset, help="re-run a step, resetting every step below it")
     p.add_argument("key")

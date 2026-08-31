@@ -228,6 +228,45 @@ def test_refresh_updates_the_head(env, fake_bin, capsys):
     assert "deadbee" in capsys.readouterr().out
 
 
+def _add_fake_jira(fake_bin, summary: str) -> None:
+    """`fake_bin` only wires up gh/git/claude; refresh also shells out to
+    `jira` if present, so tests that care about it add a copy by hand."""
+    import stat
+    import sys
+
+    body = (Path(__file__).parent / "fakes" / "fake_tool.py").read_text().split("\n", 1)[1]
+    target = fake_bin.directory / "jira"
+    target.write_text(f"#!{sys.executable}\n{body}")
+    target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    fake_bin.respond("jira issue view", stdout=summary)
+
+
+def test_refresh_dry_run_makes_no_write_and_no_jira_call(env, fake_bin, capsys, store):
+    started(fake_bin)
+    _add_fake_jira(fake_bin, "ABC-123: fresh summary\n")
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "deadbee"}))
+    capsys.readouterr()
+    assert main(["refresh", "ABC-123", "--dry-run"]) == 0
+    assert "[dry-run]" in capsys.readouterr().out
+    assert fake_bin.calls_to("jira") == []
+    assert store.read_pr("acme/api#115") is None
+    ticket = store.read_ticket("ABC-123")
+    assert ticket.get("summary", "") == ""
+
+
+def test_refresh_without_dry_run_writes_pr_and_calls_jira(env, fake_bin, capsys, store):
+    started(fake_bin)
+    _add_fake_jira(fake_bin, "ABC-123: fresh summary\n")
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "deadbee"}))
+    assert main(["refresh", "ABC-123"]) == 0
+    assert fake_bin.calls_to("jira")
+    pr = store.read_pr("acme/api#115")
+    assert pr is not None
+    assert pr["head"] == "deadbee"
+    ticket = store.read_ticket("ABC-123")
+    assert ticket["summary"] == "ABC-123: fresh summary"
+
+
 def test_open_uses_gh_web(env, fake_bin):
     started(fake_bin)
     main(["open", "ABC-123"])
