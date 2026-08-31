@@ -74,8 +74,16 @@ straight through to the step rule, so the pre-PR walk is a plain step sequence.
 ### Location
 
 - Config file: `$TICKET_CONFIG`, else `~/.ticket/config.yml`.
-- Store: the `store:` key in config, else `~/.ticket`. `$TICKET_STORE` overrides
-  both, for throwaway or test runs.
+- Store: the `store:` key in config, else the directory the config file was
+  found in (decision #24). `$TICKET_STORE` overrides both, for throwaway or
+  test runs. The default install puts the config at `~/.ticket/config.yml`, so
+  the store is `~/.ticket`; moving `$TICKET_CONFIG` moves the state with it.
+- Every path in the config — `store:`, `worktrees.root:`, `repos.<repo>.path:`,
+  `prompt:`, `run:` —
+  expands `~` and resolves relative values against the config file's directory,
+  never the current working directory (decision #25).
+- No XDG base directories. `$TICKET_CONFIG` and `$TICKET_STORE` are the two
+  knobs (decision #26).
 
 Config is central and serves every repo. Per-repo differences are expressed as
 overrides under `repos:`, not as separate files.
