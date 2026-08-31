@@ -1,4 +1,5 @@
-Read ticket $TICKET_KEY in whichever tracker this project uses. Decide whether it is ready to work.
+Read ticket $TICKET_KEY in whichever tracker this project uses.
+Decide whether it is ready to work.
 
 Report, in this order:
 1. What the ticket is actually asking for, in one sentence.
@@ -6,4 +7,5 @@ Report, in this order:
 3. Whether the acceptance criteria are testable as written.
 4. A recommendation: ready, or blocked on a specific question.
 
-Do not start designing. Do not touch code.
+Do not start designing.
+Do not touch code.
