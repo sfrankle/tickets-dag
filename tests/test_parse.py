@@ -237,8 +237,10 @@ def test_recognised_but_empty_is_not_the_same_as_unrecognised(cfg):
 
 
 def test_a_section_we_cannot_split_is_unrecognised(cfg):
-    """Markers and a verdict, but prose we have no rule for. Hand that to haiku
-    rather than record the source with zero findings."""
+    """Markers and a verdict, but prose we have no rule for.
+
+    Hand that to haiku rather than record the source with zero findings.
+    """
     assert script_parse(cfg, body("unrecognised-sections.md")).recognised is False
     assert parse_script(cfg, body("unrecognised-sections.md")) is None
 
@@ -391,8 +393,7 @@ def test_a_code_identifier_is_not_recorded_as_a_file(cfg):
 
 
 def test_a_reworded_repost_dedupes(cfg):
-    """The point of deriving a summary: `_fingerprint` stops being full-text
-    equality, so a re-posted finding with one clause reworded is a duplicate."""
+    """The point of deriving a summary: `_fingerprint` stops being full-text equality, so a re-posted finding with one clause reworded is a duplicate."""
     first = textwrap.dedent("""
         <details open>
         <summary>🟡 Maintenance</summary>

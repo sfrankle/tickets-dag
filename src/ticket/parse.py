@@ -1,24 +1,16 @@
 """Review body -> findings. Script path plus Haiku fallback.
 
-The AI reviews we trigger emit a known shape: one `<details>` block per
-severity keyed by its configured marker in `<summary>`, findings inside it,
-and a `**Verdict:**` line at the end. A script handles that. Anything else — a
-human comment, another bot, format drift — goes to Haiku. Cost is therefore
-zero on the common path and small on the uncommon one.
+The AI reviews we trigger emit a known shape: one `<details>` block per severity keyed by its configured marker in `<summary>`, findings inside it, and a `**Verdict:**` line at the end.
+A script handles that.
+Anything else — a human comment, another bot, format drift — goes to Haiku.
+Cost is therefore zero on the common path and small on the uncommon one.
 
-The built-in grammar is deliberately wide, because "our format" is a shape
-several bots land on rather than one bot's exact bytes: `<details open>` is
-still a details block, and a finding is either a `*` bullet or a paragraph
-that opens with a bolded lead. A trailing summary table is not a finding.
-Anything a config could express in a regex, the built-in tries to handle
-first — `parse.sources` in config is an escape hatch for a bot that writes
-something genuinely different, not the primary path.
+The built-in grammar is deliberately wide, because "our format" is a shape several bots land on rather than one bot's exact bytes: `<details open>` is still a details block, and a finding is either a `*` bullet or a paragraph that opens with a bolded lead.
+A trailing summary table is not a finding.
+Anything a config could express in a regex, the built-in tries to handle first — `parse.sources` in config is an escape hatch for a bot that writes something genuinely different, not the primary path.
 
-Recognised-but-empty and not-our-format are different answers and are
-returned as such (see `ScriptParse`): a review that says "None." in every
-section is ours with zero findings, while a review whose sections we cannot
-split is not ours and belongs to Haiku. Collapsing the two is what records a
-source with zero findings and never asks Haiku.
+Recognised-but-empty and not-our-format are different answers and are returned as such (see `ScriptParse`): a review that says "None." in every section is ours with zero findings, while a review whose sections we cannot split is not ours and belongs to Haiku.
+Collapsing the two is what records a source with zero findings and never asks Haiku.
 
 This module never sets `effort`. Severity says how important a finding is;
 effort says how contained the fix is. See effort.py.
@@ -48,8 +40,8 @@ def loads_loose(raw: str):
     return json.loads(match.group(1) if match else raw.strip())
 
 
-# `<details open>`, `<details class="...">` and `<DETAILS>` are all the same
-# block. Matching the literal tag lost a whole severity section in the wild.
+# `<details open>`, `<details class="...">` and `<DETAILS>` are all the same block.
+# Matching the literal tag lost a whole severity section in the wild.
 DETAILS_RE = re.compile(
     r"<details[^>]*>\s*<summary[^>]*>(?P<summary>.*?)</summary>"
     r"(?P<body>.*?)</details>",
@@ -57,41 +49,34 @@ DETAILS_RE = re.compile(
 )
 VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*", re.MULTILINE)
 EMPTY_RE = re.compile(r"^\s*(None\.?|No findings\.?)\s*$", re.IGNORECASE | re.MULTILINE)
-# A finding starts either as a list item or as a paragraph opening with a
-# bolded lead — `**Title - summary** (`path`): text` is one finding, and the
-# `*` bullet rule reads its first asterisk and then fails on the second.
+# A finding starts either as a list item or as a paragraph opening with a bolded lead — `**Title - summary** (`path`): text` is one finding, and the `*` bullet rule reads its first asterisk and then fails on the second.
 BULLET_RE = re.compile(r"^\s{0,3}[*+-]\s+")
 LEAD_RE = re.compile(r"^\s{0,3}\*\*\S")
-# A summary table at the end of a review counts findings, it does not make
-# them. Its rows must never become findings of their own.
+# A summary table at the end of a review counts findings, it does not make them.
+# Its rows must never become findings of their own.
 TABLE_RE = re.compile(r"^\s{0,3}\|")
 
 MAX_SUMMARY = 120
-# Below this, a bolded lead is a location (`**Foo.kt:43**`) rather than a
-# statement of the problem, so the sentence after it is folded in.
+# Below this, a bolded lead is a location (`**Foo.kt:43**`) rather than a statement of the problem, so the sentence after it is folded in.
 SHORT_LEAD = 32
 BOLD_LEAD_RE = re.compile(r"^\*\*(?P<lead>[^*].*?)\*\*")
-# A sentence ends at .!? followed by space and something that starts a new
-# sentence. Requiring the capital is what keeps `retry.py — retries ...` and
-# `Foo.kt:43` from being read as two sentences.
+# A sentence ends at .!? followed by space and something that starts a new sentence.
+# Requiring the capital is what keeps `retry.py — retries ...` and `Foo.kt:43` from being read as two sentences.
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[\"'(\[]?[A-Z0-9])")
-# Hyphen, en dash, em dash. Spelled by codepoint: all three turn up in review
-# prose, and two of them are invisible next to each other in source.
+# Hyphen, en dash, em dash.
+# Spelled by codepoint: all three turn up in review prose, and two of them are invisible next to each other in source.
 DASHES = "-" + chr(0x2013) + chr(0x2014)
-# What sits between a bolded lead and the sentence after it: an optional
-# parenthesised path, then punctuation.
+# What sits between a bolded lead and the sentence after it: an optional parenthesised path, then punctuation.
 LEAD_JUNK_RE = re.compile(r"^\s*(?:\([^)]*\))?\s*[:;," + re.escape(DASHES) + r"]*\s*")
 LEAD_TRAIL = " :;," + DASHES
 
-# A path in parentheses right after the lead is the format telling us the
-# file outright, so it wins over anything else quoted in the prose.
+# A path in parentheses right after the lead is the format telling us the file outright, so it wins over anything else quoted in the prose.
 PAREN_PATH_RE = re.compile(r"\(\s*(?:in\s+|at\s+|see\s+)?`([^`]+)`\s*\)")
 BACKTICK_RE = re.compile(r"`([^`]+)`")
 LINE_SUFFIX_RE = re.compile(r":\d+(?::\d+)?$")
-# `logger.warn` looks exactly like `README.md` to a `word.word` rule, and the
-# store filled up with the former. A token earns "path" by carrying a
-# directory separator or by ending in an extension people actually name files
-# with. Anything else records no file, which is better than a wrong one.
+# `logger.warn` looks exactly like `README.md` to a `word.word` rule, and the store filled up with the former.
+# A token earns "path" by carrying a directory separator or by ending in an extension people actually name files with.
+# Anything else records no file, which is better than a wrong one.
 _PATH_EXTENSIONS = """
     bash bat bzl c cc cfg clj cljs cmake conf cpp cs css csv cxx dart edn ex
     exs erl fish go gradle graphql groovy h haml hbs hcl hpp hrl hs htm html
@@ -126,9 +111,8 @@ def haiku_prompt(cfg: Config) -> str:
 class Grammar:
     """The patterns one source's findings are read with.
 
-    The built-in is `BUILTIN`. A `parse.sources` profile replaces only the
-    patterns it names, so an override of `details:` still gets the built-in
-    bullet, lead and file rules.
+    The built-in is `BUILTIN`.
+    A `parse.sources` profile replaces only the patterns it names, so an override of `details:` still gets the built-in bullet, lead and file rules.
     """
 
     details: re.Pattern
@@ -178,9 +162,7 @@ def grammar_for(cfg: Config, author: str | None) -> Grammar:
 class ScriptParse:
     """What the script parser made of a body.
 
-    `recognised` is the question `parse` and `collect` actually ask: an
-    unrecognised body goes to Haiku, a recognised one is ours even when
-    `findings` is empty because every section said "None."
+    `recognised` is the question `parse` and `collect` actually ask: an unrecognised body goes to Haiku, a recognised one is ours even when `findings` is empty because every section said "None."
     """
 
     recognised: bool
@@ -205,11 +187,9 @@ def _first_sentence(text: str) -> str:
 def _summarise(text: str) -> str:
     """One short line naming the problem, derived from the finding.
 
-    Slicing the first physical line made `summary` a copy of `body` for any
-    format that writes a titled paragraph. These formats already put the
-    short version in a bolded lead, so lift that; otherwise cut at the first
-    sentence. Either way the result is capped — `ticket findings` prints it
-    as a padded row, and `_fingerprint` dedupes on it.
+    Slicing the first physical line made `summary` a copy of `body` for any format that writes a titled paragraph.
+    These formats already put the short version in a bolded lead, so lift that; otherwise cut at the first sentence.
+    Either way the result is capped — `ticket findings` prints it as a padded row, and `_fingerprint` dedupes on it.
     """
     flat = " ".join(text.split())
     if not flat:
@@ -264,9 +244,8 @@ def _has_content(block: str, grammar: Grammar) -> bool:
 def _units(block: str, grammar: Grammar) -> list[str]:
     """One entry per finding: a bullet or a lead-bolded paragraph, folded.
 
-    A paragraph that opens with neither is prose about the section rather
-    than a finding, and is skipped along with its continuation lines. Table
-    rows are skipped outright.
+    A paragraph that opens with neither is prose about the section rather than a finding, and is skipped along with its continuation lines.
+    Table rows are skipped outright.
     """
     if grammar.empty.search(block):
         return []
@@ -323,8 +302,7 @@ def script_parse(cfg: Config, body: str, author: str | None = None) -> ScriptPar
         units = _units(section, grammar)
         if not units and _has_content(section, grammar):
             # Our markers and our verdict, but a section we have no rule for.
-            # Handing that to Haiku is the whole point of having a fallback;
-            # calling it ours with zero findings loses the review silently.
+            # Handing that to Haiku is the whole point of having a fallback; calling it ours with zero findings loses the review silently.
             return ScriptParse(False, [])
         for unit in units:
             findings.append(

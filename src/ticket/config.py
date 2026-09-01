@@ -116,12 +116,9 @@ class Fix:
 class ParseSource:
     """One author's override of the built-in finding grammar.
 
-    The escape hatch, not the road: `parse.py` ships a grammar wide enough
-    for the shapes review bots actually write, and a profile exists for the
-    bot that writes something genuinely different — so a new one is onboarded
-    without waiting for a release. Every pattern is optional and replaces only
-    itself; regexes in YAML rot, so the fewer of these a config carries, the
-    better. Patterns are compiled here so a typo fails at load.
+    The escape hatch, not the road: `parse.py` ships a grammar wide enough for the shapes review bots actually write, and a profile exists for the bot that writes something genuinely different — so a new one is onboarded without waiting for a release.
+    Every pattern is optional and replaces only itself; regexes in YAML rot, so the fewer of these a config carries, the better.
+    Patterns are compiled here so a typo fails at load.
     """
 
     author: str
@@ -455,9 +452,8 @@ PARSE_PATTERNS = ("details", "bullet", "lead", "file", "verdict")
 def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
     """`parse.sources:`, the optional per-author grammar override.
 
-    Omitted — the normal case — means every source is read with the built-in
-    grammar. A profile is only consulted for the author it names, so adding
-    one can never change how anything else parses.
+    Omitted — the normal case — means every source is read with the built-in grammar.
+    A profile is only consulted for the author it names, so adding one can never change how anything else parses.
     """
     if not raw:
         return ()

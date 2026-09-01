@@ -44,17 +44,13 @@ severities:
   - id: architecture
     marker: "🔵"
 
-# Optional, and usually absent. The script parser ships a grammar wide enough
-# for the shapes review bots actually write: `<details>` with or without
-# attributes, findings as `*`/`-` bullets or as paragraphs opening with a
-# bolded lead, and a trailing summary table ignored. A body it cannot split
-# goes to Haiku rather than being recorded with no findings.
+# Optional, and usually absent.
+# The script parser ships a grammar wide enough for the shapes review bots actually write: `<details>` with or without attributes, findings as `*`/`-` bullets or as paragraphs opening with a bolded lead, and a trailing summary table ignored.
+# A body it cannot split goes to Haiku rather than being recorded with no findings.
 #
-# `parse.sources` is the escape hatch for a bot that writes something else, so
-# it can be onboarded without waiting for a release. A profile applies only to
-# the author it names, and replaces only the patterns it gives — everything
-# else stays the built-in. Regexes in YAML rot, so prefer widening the built-in
-# to carrying one of these.
+# `parse.sources` is the escape hatch for a bot that writes something else, so it can be onboarded without waiting for a release.
+# A profile applies only to the author it names, and replaces only the patterns it gives — everything else stays the built-in.
+# Regexes in YAML rot, so prefer widening the built-in to carrying one of these.
 #
 # parse:
 #   sources:
