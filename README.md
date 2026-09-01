@@ -9,6 +9,8 @@ Steps and reviews live in YAML; the CLI verb set does not grow when they do.
 uv tool install .
 ```
 
+From a clone — the config, prompts and scripts `Configure` copies live in `examples/` and are not packaged in the wheel.
+
 ## Configure
 
 ```bash
