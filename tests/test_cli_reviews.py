@@ -567,3 +567,84 @@ def test_findings_are_listed_in_configured_severity_order(
 
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
     assert [ln.split()[2] for ln in lines] == ["must-fix", "consider"]
+
+
+def one_review(fake_bin, body_file="example-review.md", author="claude"):
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": author},
+                    "body": (FIXTURES / body_file).read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+
+
+def test_collect_does_not_call_a_source_foreign_when_nothing_was_dispatched(
+    env, fake_bin, capsys
+):
+    """`(not one of ours)` only means something once something of ours is out
+    there. With an empty `dispatched` it was on every line and said nothing."""
+    started(fake_bin)
+    one_review(fake_bin, author="review-bot")
+    capsys.readouterr()
+    assert main(["collect", "ABC-123"]) == 0
+    out = capsys.readouterr().out
+    assert "not one of ours" not in out
+    assert "review-bot" in out
+    assert "3 findings" in out
+
+
+def test_collect_still_marks_a_foreign_source_when_we_dispatched_something(
+    env, fake_bin, capsys
+):
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "review-bot"},
+                    "body": (FIXTURES / "human-comment.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
+    )
+    fake_bin.respond("claude", stdout=json.dumps([]))
+    capsys.readouterr()
+    assert main(["collect", "ABC-123"]) == 0
+    assert "not one of ours" in capsys.readouterr().out
+
+
+def test_collect_says_it_is_not_waiting_for_an_outstanding_review(
+    env, fake_bin, capsys
+):
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
+    capsys.readouterr()
+    assert main(["collect", "ABC-123"]) == 0
+    out = capsys.readouterr().out
+    assert "not waiting" in out
+    assert "docs-tests" in out
+
+
+def test_collect_recollect_re_reads_a_named_source(env, fake_bin, capsys):
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    one_review(fake_bin)
+    main(["collect", "ABC-123"])
+    capsys.readouterr()
+    assert main(["collect", "ABC-123", "--recollect", "PRR_1"]) == 0
+    out = capsys.readouterr().out
+    assert "re-read" in out
+    assert "0 new findings" in out

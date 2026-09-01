@@ -394,14 +394,33 @@ def cmd_collect(args) -> int:
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
     added = collect_module.collect(
-        inner.cfg, inner.store, ticket, pr_ref, dry_run=args.dry_run
+        inner.cfg,
+        inner.store,
+        ticket,
+        pr_ref,
+        dry_run=args.dry_run,
+        recollect=args.recollect,
     )
+    pr = inner.store.read_pr(pr_ref) or {}
+    # `(not one of ours)` only carries information when some of the sources
+    # could have been ours. With nothing dispatched it was on every line.
+    ours_are_out = bool(pr.get("dispatched"))
     if not added:
         print("nothing new")
-        return 0
     for record in added:
-        source = record["review"] or f"{record['author']} (not one of ours)"
-        print(f"collected {source}: {len(record['findings'])} findings")
+        if record["review"]:
+            source = record["review"]
+        elif ours_are_out:
+            source = f"{record['author']} (not one of ours)"
+        else:
+            source = record["author"]
+        if record.get("reread"):
+            print(f"re-read {source}: {len(record['findings'])} new findings")
+        else:
+            print(f"collected {source}: {len(record['findings'])} findings")
+    pending = collect_module.outstanding(pr)
+    if pending:
+        print(f"not waiting for {pending}: run collect again once it posts")
     return 0
 
 
@@ -711,6 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("collect", cmd_collect, help="ingest reviews and comments not yet seen")
     p.add_argument("key")
     p.add_argument("--pr")
+    p.add_argument(
+        "--recollect",
+        action="append",
+        metavar="SOURCE_ID",
+        help="re-read this already-collected source (repeatable)",
+    )
     p.add_argument("--dry-run", action="store_true")
 
     p = add("fix", cmd_fix, help="work findings, one commit each, routed by effort")

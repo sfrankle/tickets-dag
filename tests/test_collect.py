@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ticket.collect import collect
+from ticket.collect import collect, outstanding
 from ticket.config import load_config
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reviews"
@@ -296,3 +296,129 @@ def test_collect_fetches_first(cfg, store, fake_bin, tmp_path):
     ticket["worktree"] = str(checkout)
     collect(cfg, store, ticket, "acme/api#115")
     assert any("fetch" in " ".join(c) for c in fake_bin.calls_to("git"))
+
+
+def collected_pr(store, source_id="PRR_1", findings=None, review=None, author="claude"):
+    """A PR whose `collected` already holds a record for `source_id`."""
+    store.write_pr(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "head": "9c1f0ab",
+            "dispatched": [
+                {
+                    "review": "docs-tests",
+                    "at": "t",
+                    "head": "9c1f0ab",
+                    "transport": "bot",
+                }
+            ],
+            "collected": [
+                {
+                    "source_id": source_id,
+                    "review": review,
+                    "author": author,
+                    "at": "t",
+                    "findings": findings or [],
+                }
+            ],
+            "skipped": [],
+        }
+    )
+
+
+def test_a_source_recorded_with_zero_findings_is_re_parsed(cfg, store, fake_bin):
+    """The #9 grammar bug recorded readable reviews as 0 findings. Once the
+    parser can read the body, a re-run must pick those findings up rather
+    than skipping the source id forever."""
+    collected_pr(store, review="docs-tests")
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    records = collect(cfg, store, ticket_doc(), "acme/api#115")
+    assert [r["findings"] for r in records] == [["f01", "f02", "f03"]]
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert len(collected) == 1
+    assert collected[0]["findings"] == ["f01", "f02", "f03"]
+
+
+def test_a_re_read_source_does_not_claim_a_second_review(cfg, store, fake_bin):
+    """The record already occupies its review's collected slot; re-reading it
+    must not consume another one."""
+    collected_pr(store, review="docs-tests")
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    collect(cfg, store, ticket_doc(), "acme/api#115")
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert [c["review"] for c in collected] == ["docs-tests"]
+
+
+def test_an_empty_source_the_parser_still_cannot_read_spends_no_tokens(
+    cfg, store, fake_bin
+):
+    """Automatic re-reading is free: it re-runs the script parser only. A body
+    that is still unreadable is left alone rather than paying for a Haiku call
+    on every run."""
+    collected_pr(store, author="someone")
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "human-comment.md").read_text()),
+    )
+    assert collect(cfg, store, ticket_doc(), "acme/api#115") == []
+    assert fake_bin.calls_to("claude") == []
+
+
+def test_recollect_re_reads_a_source_that_already_had_findings(cfg, store, fake_bin):
+    """--recollect is the case automatic re-reading does not cover: a source
+    that produced findings and still needs reading again."""
+    seeded_pr(store)
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    ticket = ticket_doc()
+    collect(cfg, store, ticket, "acme/api#115")
+    assert collect(cfg, store, ticket, "acme/api#115", recollect=["PRR_1"]) != []
+
+
+def test_recollecting_does_not_duplicate_findings_already_minted(cfg, store, fake_bin):
+    """Dedupe is on the finding fingerprint, so a re-read of a source whose
+    findings are still open mints nothing new."""
+    seeded_pr(store)
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    ticket = ticket_doc()
+    collect(cfg, store, ticket, "acme/api#115")
+    records = collect(cfg, store, ticket, "acme/api#115", recollect=["PRR_1"])
+    assert records[0]["findings"] == []
+    assert len(store.read_findings("acme/api#115")["findings"]) == 3
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert len(collected) == 1
+    assert collected[0]["findings"] == ["f01", "f02", "f03"]
+
+
+def test_recollect_of_a_source_that_is_not_on_the_pr_says_so(
+    cfg, store, fake_bin, capsys
+):
+    seeded_pr(store)
+    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
+    assert collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_9"]) == []
+    assert "PRR_9" in capsys.readouterr().out
+
+
+def test_collect_does_not_wait_for_an_outstanding_review(cfg, store, fake_bin):
+    """`outstanding` is what the CLI says out loud: collect reads what is on
+    the PR now and returns, it never polls."""
+    seeded_pr(store)
+    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
+    assert collect(cfg, store, ticket_doc(), "acme/api#115") == []
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"

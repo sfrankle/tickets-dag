@@ -59,6 +59,7 @@ ticket skip describe ABC-123      # walk past a step (or a review)
 ticket release review-spec ABC-123
 ticket review ABC-123             # dispatch the next review
 ticket collect ABC-123            # ingest reviews and comments not yet seen
+ticket collect ABC-123 --recollect 5049842015   # read one collected source again
 ticket findings ABC-123
 ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
@@ -111,6 +112,12 @@ Change `severities:` and both paths follow: the script parser looks for the new 
 For a bot that writes something genuinely different, an optional `parse.sources` block overrides the built-in grammar for that author alone (`details:`, `bullet:`, `lead:`, `file:`, `verdict:`, each optional); it exists so a new bot is onboarded without a release, not as the normal way to parse.
 A profile is validated at load under the same flags it runs under, and `examples/config.yml` states which those are; `file:` is the one pattern taken at its word, recording its capture with none of the path checks the built-in applies.
 The example review prompts under `examples/input/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
+
+**`collect` does not wait, and a source can be read again.** It reads what is on the PR at the moment it runs and returns; a dispatched review that has not posted yet is named in the output as still outstanding, and you run `collect` again once it lands.
+A collected source is normally skipped on the next run, with two exceptions.
+A source that produced no findings is re-parsed every time, for free — the re-parse stops at the script parser and never falls back to Haiku — so a parser that has since learned to read that body recovers findings that were previously stranded behind their own source id.
+`ticket collect KEY --recollect <source-id>` (repeatable) forces a full re-read of a named source, Haiku included, which is the case a source that already produced findings needs.
+Neither can duplicate anything: a re-read is deduplicated against the findings already open on the PR, and it updates the source's existing collection record rather than adding a second one.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.
 The tracker is the other way round — the engine never learns what one is.

@@ -4,6 +4,23 @@ Dedupe is on the GitHub review/comment id, so collection is idempotent and safe
 to run repeatedly. Sources we did not dispatch — humans, review-bot, other
 required agents — are recorded with `review: null` and an author. They are
 tracked fully; they are simply not in the config.
+
+A source id in `collected` is normally skipped, with two exceptions (issue #10):
+
+  * a record that produced no findings is re-parsed on every run, so a parser
+    that has since learned to read that body recovers its findings instead of
+    the source being unreachable forever. This costs nothing: the re-parse
+    stops at the script parser and never falls back to Haiku.
+  * `recollect=[source_id]` forces a full re-read of a named source, Haiku
+    included — the case a record that already has findings needs.
+
+Neither can duplicate a finding: everything parsed goes through
+`_drop_duplicates` against the findings already open on the PR, and a re-read
+updates the existing collection record rather than adding a second one.
+
+Collection never waits. It reads what is on the PR at the moment it runs and
+returns; a review that has not posted yet is simply still outstanding, which
+`outstanding()` reports so the caller can say so.
 """
 
 from __future__ import annotations
@@ -59,6 +76,14 @@ def _drop_duplicates(
     return fresh
 
 
+def outstanding(pr: dict) -> str | None:
+    """The dispatched review whose result has not been collected yet, if any.
+
+    `collect` does not wait for it — this is what lets a caller say so.
+    """
+    return next_uncollected(pr)
+
+
 def collect(
     cfg: Config,
     store: Store,
@@ -66,9 +91,11 @@ def collect(
     pr_ref: str,
     *,
     dry_run: bool = False,
+    recollect: list[str] | None = None,
 ) -> list[dict]:
     pr = ensure_pr(store, ticket, pr_ref)
-    seen = {c["source_id"] for c in pr.get("collected") or []}
+    seen = {c["source_id"]: c for c in pr.get("collected") or []}
+    forced = set(recollect or ())
 
     # Fetch before reading the PR: the whole point of collecting is to act on
     # commits and comments made elsewhere.
@@ -83,7 +110,11 @@ def collect(
 
     added: list[dict] = []
     for source in sources:
-        if source["id"] in seen:
+        prior = seen.get(source["id"])
+        forced_here = source["id"] in forced
+        # A record that already produced findings is done with, unless the
+        # caller named it. One that produced none is looked at again below.
+        if prior is not None and prior.get("findings") and not forced_here:
             continue
         if not source["body"].strip():
             continue
@@ -94,12 +125,26 @@ def collect(
         # parser recognises is therefore one of ours; anything that falls back
         # to Haiku is not, and is recorded with review: null.
         script_findings = parse_script(cfg, source["body"], author=source["author"])
-        review_id = next_uncollected(pr) if script_findings is not None else None
+
+        if prior is not None and not forced_here and not script_findings:
+            # An automatic re-read is a free re-run of the script parser. The
+            # body is still unreadable (or genuinely empty, an all-clear
+            # review), so there is nothing to recover and no reason to buy a
+            # Haiku call for it on this run and every run after it.
+            continue
+
+        # A re-read keeps the review its record already claimed: the record
+        # occupies that review's collected slot, so asking `next_uncollected`
+        # again would hand out a second one.
+        review_id = (prior or {}).get("review")
+        if review_id is None and script_findings is not None:
+            review_id = next_uncollected(pr)
 
         if dry_run:
             # Stop before the parser: a dry run must not spend a Haiku call on
             # parsing or on estimating effort.
-            print(f"[dry-run] would collect {source['id']} from {source['author']}")
+            verb = "re-read" if prior is not None else "collect"
+            print(f"[dry-run] would {verb} {source['id']} from {source['author']}")
             added.append(
                 {
                     "source_id": source["id"],
@@ -123,22 +168,40 @@ def collect(
                 "source_id": source["id"],
             }
 
+        # Named, not looked up: this runs before the `write_pr` calls
+        # below, so on a first collection there is no PR document on disk
+        # to find the key in.
+        minted = store.add_findings(pr_ref, findings, ticket["key"])
+
+        if prior is not None:
+            # One record per source, always: a re-read updates the record it
+            # already has, so the source id keeps a single history.
+            prior["review"] = review_id
+            prior["reread_at"] = now()
+            prior["findings"] = list(prior.get("findings") or []) + minted
+            store.write_pr(pr)
+            # What the caller is told about is this run's work, so `findings`
+            # here is what was newly minted, not the record's whole list.
+            added.append(dict(prior, findings=minted, reread=True))
+            continue
+
         record = {
             "source_id": source["id"],
             "review": review_id,
             "author": source["author"],
             "at": now(),
-            "findings": [],
+            "findings": minted,
         }
 
-        # Named, not looked up: this runs before `write_pr` below, so on a first collection there is no PR document on disk to find the key in.
-        record["findings"] = store.add_findings(pr_ref, findings, ticket["key"])
         pr.setdefault("collected", []).append(record)
         # Written per source, not once at the end: a failure on a later source
         # must not leave earlier findings minted with no collection record,
         # which would re-ingest and duplicate them on the next run.
         store.write_pr(pr)
-        seen.add(source["id"])
+        seen[source["id"]] = record
         added.append(record)
+
+    for source_id in sorted(forced - {s["id"] for s in sources}):
+        print(f"--recollect {source_id}: no such source on {pr_ref}")
 
     return added
