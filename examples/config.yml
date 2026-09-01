@@ -1,0 +1,131 @@
+# Copy to ~/.ticket/config.yml and edit. $TICKET_CONFIG overrides the location.
+# store: defaults to this file's own directory, so moving the config moves the
+# state with it. Set it only to split the two apart. Relative values, here and
+# in worktrees.root, resolve against this file's directory, not the cwd.
+store: ~/.ticket
+
+models:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+  haiku: claude-haiku-4-5-20251001
+
+defaults:
+  model: opus
+
+# git fetch (and a fast-forward when one is possible) before anything that reads
+# a checkout. Cheap, and the gh bot commits on the remote. `--no-sync` opts out.
+sync: true
+
+# Optional. `refresh` runs this argv, substitutes {key}, and keeps the first
+# line of stdout as the ticket summary. Unset, or a command not installed on
+# this machine, means no lookup — never an error. Any tracker with a CLI works;
+# the engine only knows how to run a command.
+# tracker:
+#   summary: [jira, issue, view, "{key}", --plain]
+
+# Optional. House style for ticket keys, checked by `ticket track`. The engine
+# itself only refuses a key that would not survive being a file or directory
+# name, because that is what a key becomes.
+# key_pattern: "^[A-Z][A-Z0-9]*-[0-9]+$"
+
+# The vocabulary a finding's severity is drawn from. Order is importance —
+# `ticket findings` lists in this order — and `marker:` is what the script
+# parser looks for in a review's `<summary>`. Exactly one entry is `default:`,
+# the severity a Haiku-parsed finding falls back to when it names something
+# this list has never heard of. Omit the whole key and these three are what
+# you get; the review prompts below spell out the same legend, so a config
+# that changes it changes them too.
+severities:
+  - id: blocking
+    marker: "🔴"
+  - id: maintenance
+    marker: "🟡"
+    default: true
+  - id: architecture
+    marker: "🔵"
+
+# A checkout per ticket, or work in the clone itself on a branch.
+worktrees:
+  enabled: true
+  root: ~/worktrees
+  branch: "{key}"           # {key} {repo} {owner} {name}
+
+steps:
+  - id: evaluate
+    model: opus
+    prompt: prompts/evaluate.md
+
+  - id: spec
+    model: opus
+    prompt: prompts/spec.md
+    needs: [evaluate]
+
+  - id: review-spec
+    gate: true
+    needs: [spec]
+
+  - id: plan
+    model: opus
+    prompt: prompts/plan.md
+    needs: [review-spec]
+
+  - id: review-plan
+    gate: true
+    needs: [plan]
+
+  - id: worktree
+    run: scripts/worktree.sh
+    needs: [review-plan]
+
+  - id: implement
+    model: opus
+    prompt: prompts/implement.md
+    needs: [worktree]
+    # `args:` is appended to the claude argv. This is where agent mode goes —
+    # a handoff that has to write files needs it.
+    args: [--permission-mode, acceptEdits]
+
+  - id: draft-pr
+    run: scripts/draft-pr.sh
+    needs: [implement]
+
+  - id: describe
+    model: haiku
+    prompt: prompts/describe.md
+    needs: [draft-pr]
+
+# The local session a `hard` finding gets. Not a step — a fix is not in the
+# DAG — but it is a handoff that has to write files, so it needs agent mode
+# for the same reason `implement` does. `model:` defaults to defaults.model.
+fix:
+  model: opus
+  args: [--permission-mode, acceptEdits]
+
+# Only the AI reviews we dispatch. Reviews your repo already requires — bots,
+# other agents, humans — are never listed here. They are collected as sources
+# of findings, not as reviews we fire.
+#
+# Each prompt states the output format in full. It has to: a `bot` review is
+# posted as a PR comment and a `local` review runs in the ticket's checkout,
+# so neither can read a sibling file in this directory.
+reviews:
+  - id: correctness
+    order: 1
+    dispatch: bot
+    prompt: prompts/reviews/correctness.md
+
+  - id: security
+    order: 2
+    dispatch: local
+    model: opus
+    prompt: prompts/reviews/security.md
+
+# Shallow overrides. `reviews:` replaces the list; `steps.skip:` subtracts.
+repos:
+  acme/api:
+    path: ~/code/api          # the clone worktrees are added from
+    reviews: [correctness]
+  acme/infra:
+    path: ~/code/infra
+    steps:
+      skip: [describe]

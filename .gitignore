@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# superpowers scratch
+.superpowers/
+
+# Local design notes, per .claude/CLAUDE.md
+.claude/notes/
