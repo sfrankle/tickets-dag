@@ -22,6 +22,33 @@ DEFAULT_WORKTREE_ROOT = Path("~/worktrees")
 # The house style this tool grew up with, kept as the default so a config
 # that says nothing keeps working. It is an example, not the engine's
 # opinion: `severities:` replaces it wholesale.
+# Every key each block understands. A key outside its set is a typo, and a
+# typo under a known block used to load clean and do nothing (issues #6, #8).
+TOP_LEVEL_KEYS = {
+    "store",
+    "models",
+    "defaults",
+    "sync",
+    "tracker",
+    "key_pattern",
+    "severities",
+    "worktrees",
+    "steps",
+    "reviews",
+    "fix",
+    "parse",
+    "repos",
+}
+DEFAULTS_KEYS = {"model"}
+WORKTREES_KEYS = {"enabled", "root", "branch"}
+TRACKER_KEYS = {"summary"}
+FIX_KEYS = {"model", "args"}
+STEP_KEYS = {"id", "run", "gate", "prompt", "model", "needs", "args"}
+REVIEW_KEYS = {"id", "order", "dispatch", "prompt", "model", "args"}
+SEVERITY_KEYS = {"id", "marker", "default"}
+REPO_KEYS = {"path", "reviews", "steps"}
+REPO_STEPS_KEYS = {"skip"}
+
 DEFAULT_SEVERITIES = (
     {"id": "blocking", "marker": "\U0001f534"},
     {"id": "maintenance", "marker": "\U0001f7e1", "default": True},
@@ -38,6 +65,24 @@ def _anchor(raw: str, root: Path) -> Path:
     """
     candidate = Path(raw).expanduser()
     return candidate if candidate.is_absolute() else root / candidate
+
+
+def _reject_unknown(where: str, raw: dict, allowed: set[str]) -> None:
+    """Fail on a key this loader does not know (issues #6, #8).
+
+    A dropped key is worse than a rejected one: `tracker: {sumary: ...}` looks
+    configured, loads clean, and does nothing. Every block validates its own
+    keys, so the message names the block and what it could have meant.
+    """
+    # str() first: YAML 1.1 reads a bare `no:` as the boolean False, and a
+    # mixed str/bool key list is unsortable — a traceback out of the one verb
+    # whose job is to report bad config instead of raising.
+    unknown = sorted(str(k) for k in raw if k not in allowed)
+    if unknown:
+        raise ConfigError(
+            f"unknown key{'s' if len(unknown) > 1 else ''} under {where}: "
+            f"{', '.join(str(k) for k in unknown)}. Known: {', '.join(sorted(allowed))}"
+        )
 
 
 @dataclass(frozen=True)
@@ -287,6 +332,7 @@ def _load_steps(raw_steps: list, default_model: str) -> tuple[Step, ...]:
             raise ConfigError("every step needs an id")
         if step_id in seen:
             raise ConfigError(f"duplicate step id: {step_id}")
+        _reject_unknown(f"step {step_id}", raw, STEP_KEYS)
         seen.add(step_id)
         kind = _step_kind(raw)
         model = raw.get("model") or (default_model if kind == "handoff" else None)
@@ -336,6 +382,7 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
             raise ConfigError("every review needs an id")
         if review_id in seen:
             raise ConfigError(f"duplicate review id: {review_id}")
+        _reject_unknown(f"review {review_id}", raw, REVIEW_KEYS)
         seen.add(review_id)
         dispatch = raw.get("dispatch")
         if dispatch not in ("bot", "local"):
@@ -372,6 +419,7 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
 def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
     if not isinstance(raw, dict):
         raise ConfigError("fix: must be a mapping with model: and/or args:")
+    _reject_unknown("fix:", raw, FIX_KEYS)
     model = raw.get("model") or default_model
     if not model:
         raise ConfigError("fix: has no model: and there is no defaults.model")
@@ -427,6 +475,7 @@ def _load_severities(raw) -> tuple[Severity, ...]:
             raise ConfigError("every severity needs an id")
         if severity_id in seen:
             raise ConfigError(f"duplicate severity id: {severity_id}")
+        _reject_unknown(f"severity {severity_id}", item, SEVERITY_KEYS)
         seen.add(severity_id)
         marker = item.get("marker")
         if marker is not None:
@@ -536,6 +585,7 @@ def _load_tracker(raw) -> Tracker:
         return Tracker()
     if not isinstance(raw, dict):
         raise ConfigError("tracker: must be a mapping with summary:")
+    _reject_unknown("tracker:", raw, TRACKER_KEYS)
     summary = raw.get("summary")
     if summary is None:
         return Tracker()
@@ -560,8 +610,14 @@ def load_config(path: Path | None = None) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} is not a YAML mapping")
 
+    _reject_unknown(f"{path}", raw, TOP_LEVEL_KEYS)
+    defaults = raw.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        raise ConfigError("defaults: must be a mapping with model:")
+    _reject_unknown("defaults:", defaults, DEFAULTS_KEYS)
+
     models = dict(raw.get("models") or {})
-    default_model = (raw.get("defaults") or {}).get("model")
+    default_model = defaults.get("model")
     if default_model and default_model not in models:
         raise ConfigError(
             f"defaults.model is {default_model!r}, which is not in models:"
@@ -574,6 +630,9 @@ def load_config(path: Path | None = None) -> Config:
     root = path.parent
     store = os.environ.get("TICKET_STORE") or raw.get("store")
     wt = raw.get("worktrees") or {}
+    if not isinstance(wt, dict):
+        raise ConfigError("worktrees: must be a mapping")
+    _reject_unknown("worktrees:", wt, WORKTREES_KEYS)
     cfg = Config(
         store=_anchor(store, root) if store else root,
         root=root,
@@ -599,6 +658,13 @@ def load_config(path: Path | None = None) -> Config:
     # Validate every repo override eagerly, not just the ones a given run
     # happens to call `for_repo` on: a bad repos: entry should fail at load
     # time, before the DAG is ever built for that repo.
-    for repo in cfg.repos:
+    for repo, override in cfg.repos.items():
+        if not isinstance(override, dict):
+            raise ConfigError(f"repos.{repo} must be a mapping")
+        _reject_unknown(f"repos.{repo}", override, REPO_KEYS)
+        repo_steps = override.get("steps") or {}
+        if not isinstance(repo_steps, dict):
+            raise ConfigError(f"repos.{repo}.steps must be a mapping with skip:")
+        _reject_unknown(f"repos.{repo}.steps", repo_steps, REPO_STEPS_KEYS)
         cfg.for_repo(repo)
     return cfg

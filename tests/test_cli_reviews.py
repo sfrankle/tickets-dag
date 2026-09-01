@@ -58,13 +58,13 @@ def env(tmp_path, monkeypatch):
 def started(fake_bin):
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
     main(["track", "ABC-123", "--repo", "acme/api"])
-    main(["run", "draft-pr", "ABC-123"])
+    main(["run", "ABC-123", "draft-pr"])
     # `describe` needs draft-pr and is declared before the reviews, so decision
     # #20 (a runnable step outranks dispatching a new review) makes it run
     # here too — otherwise `ticket review`/`ticket next` would hit `describe`
     # instead of a review, contradicting resolve.py's established order
     # (see test_resolve.py::test_a_runnable_step_outranks_dispatching_a_new_review).
-    main(["run", "describe", "ABC-123"])
+    main(["run", "ABC-123", "describe"])
 
 
 def test_review_dispatches_the_next_one(env, fake_bin, capsys):
@@ -342,7 +342,7 @@ def test_fix_wait_baselines_on_the_live_head(env, fake_bin, monkeypatch):
 
 def test_reset_clears_the_step_and_everything_below(env, fake_bin, capsys):
     started(fake_bin)
-    main(["run", "describe", "ABC-123"])
+    main(["run", "ABC-123", "describe"])
     assert main(["reset", "ABC-123", "draft-pr", "--force"]) == 0
     capsys.readouterr()
     main(["ABC-123"])
@@ -370,7 +370,7 @@ def test_a_second_run_on_a_locked_ticket_is_refused(env, fake_bin, capsys):
     started(fake_bin)
     store = Store(load_config().store)
     with store.lock("ABC-123"):
-        assert main(["run", "describe", "ABC-123"]) == 1
+        assert main(["run", "ABC-123", "describe"]) == 1
     assert "locked" in capsys.readouterr().err
 
 

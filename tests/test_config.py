@@ -452,3 +452,77 @@ def test_a_parse_source_that_overrides_nothing_is_an_error(tmp_path):
     text = PARSE.replace("      bullet: '^\\s{0,3}>>\\s+'\n", "")
     with pytest.raises(ConfigError, match="overrides nothing"):
         load_config(write(tmp_path, text))
+
+# --- unknown keys ---------------------------------------------------------
+#
+# Issues #6 and #8: a typo under a known block used to be dropped in silence,
+# so `tracker: {sumary: ...}` looked configured and did nothing. A key this
+# loader does not know is a mistake, and mistakes are loud.
+
+
+def test_an_unknown_top_level_key_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\nreviwes: []\n"))
+    assert "reviwes" in str(exc.value)
+
+
+def test_an_unknown_key_under_tracker_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\ntracker:\n  sumary: [jira]\n"))
+    assert "sumary" in str(exc.value)
+    assert "tracker" in str(exc.value)
+
+
+def test_an_unknown_key_on_a_step_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(
+            write(
+                tmp_path,
+                SAMPLE.replace(
+                    "    gate: true", "    gate: true\n    need: [evaluate]"
+                ),
+            )
+        )
+    assert "need" in str(exc.value)
+
+
+def test_an_unknown_key_on_a_review_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(
+            write(
+                tmp_path,
+                SAMPLE.replace("    dispatch: bot", "    dispatch: bot\n    oder: 3"),
+            )
+        )
+    assert "oder" in str(exc.value)
+
+
+def test_an_unknown_key_under_worktrees_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\nworktrees:\n  enabld: false\n"))
+    assert "enabld" in str(exc.value)
+
+
+def test_an_unknown_key_under_a_repo_override_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\n    revews: [docs-tests]\n"))
+    assert "revews" in str(exc.value)
+
+
+def test_an_unknown_key_under_defaults_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(
+            write(
+                tmp_path,
+                SAMPLE.replace(
+                    "defaults:\n  model: opus",
+                    "defaults:\n  model: opus\n  modell: haiku",
+                ),
+            )
+        )
+    assert "modell" in str(exc.value)
+
+
+def test_a_known_key_everywhere_still_loads(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert next(s.id for s in cfg.steps) == "evaluate"

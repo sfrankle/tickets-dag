@@ -146,34 +146,34 @@ def test_next_stops_at_a_gate(env, capsys, fake_bin):
 def test_release_advances_past_the_gate(env, capsys, fake_bin):
     main(["track", "ABC-123", "--repo", "acme/api"])
     main(["next", "ABC-123"])
-    main(["release", "review-spec", "ABC-123"])
+    main(["release", "ABC-123", "review-spec"])
     main(["next", "ABC-123"])
     assert "acme/api#115" in capsys.readouterr().out
 
 
 def test_run_reruns_a_named_step(env, fake_bin):
     main(["track", "ABC-123", "--repo", "acme/api"])
-    main(["run", "evaluate", "ABC-123"])
-    main(["run", "evaluate", "ABC-123"])
+    main(["run", "ABC-123", "evaluate"])
+    main(["run", "ABC-123", "evaluate"])
     assert len(fake_bin.calls_to("claude")) == 2
 
 
 def test_run_rejects_an_unknown_step(env, capsys):
     main(["track", "ABC-123", "--repo", "acme/api"])
-    assert main(["run", "nonesuch", "ABC-123"]) == 1
+    assert main(["run", "ABC-123", "nonesuch"]) == 1
     assert "unknown step" in capsys.readouterr().err
 
 
 def test_skip_marks_a_step_and_the_resolver_walks_past(env, capsys, fake_bin):
     main(["track", "ABC-123", "--repo", "acme/api"])
-    main(["skip", "evaluate", "ABC-123", "--reason", "trivial"])
+    main(["skip", "ABC-123", "evaluate", "--reason", "trivial"])
     main(["next", "ABC-123"])
     assert "parked" in capsys.readouterr().out
 
 
 def test_skip_resolves_a_review_id_when_it_is_not_a_step(env, capsys):
     main(["track", "ABC-123", "--repo", "acme/api"])
-    main(["skip", "docs-tests", "ABC-123"])
+    main(["skip", "ABC-123", "docs-tests"])
     assert main(["ABC-123"]) == 0
 
 

@@ -2,12 +2,25 @@
 
 Fixed verbs. The verb set does not grow when the config does: adding a step to
 YAML changes what `next` does and what `run` accepts, and adds nothing here.
+
+Two families of verb, and `--help` says which is which (issue #12). Management
+verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config`
+— are the engine's own and mean the same thing under every config. Stage verbs
+— `run`, `skip`, `release`, `review`, `collect`, `fix`, ... — are also the
+engine's, but every name they take as an argument comes from config, and
+`ticket stages --list` is where those names are read.
+
+A stage exists because config declares it, not because the store has a row for
+it: the store only records what has happened to a stage. There is no per-key
+registration, and every verb here resolves a stage name against `cfg.steps`
+and `cfg.reviews` alone.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -20,7 +33,7 @@ from . import fix as fix_module
 from . import gh
 from . import reviews as reviews_module
 from . import steps as steps_module
-from .config import Config, load_config
+from .config import Config, config_path, load_config
 from .effort import EFFORTS
 from .errors import TicketError
 from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
@@ -149,11 +162,14 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     if row["pr"]:
         findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
         print(f"PR: {row['pr']}{findings}")
-    for step in scoped(ctx, ticket).cfg.steps:
+    cfg = scoped(ctx, ticket).cfg
+    for step in cfg.steps:
         record = (ticket.get("steps") or {}).get(step.id) or {}
         # A recorded path can outlive its file; say so here rather than let whatever goes to read it fall over.
         missing = "  (log missing)" if ctx.store.log_missing(record.get("log")) else ""
         print(f"  {step.id:<16} {record.get('status', '-')}{missing}")
+    if any((ticket.get("steps") or {}).get(s.id, {}).get("log") for s in cfg.steps):
+        print(f"logs: ticket log {row['key']} <step>")
     print(
         f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"
     )
@@ -608,6 +624,8 @@ def cmd_reset(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
+    if args.step:
+        inner.cfg.step(args.step)  # a name config does not declare is an error
     affected = (
         downstream(inner.cfg, args.step)
         if args.step
@@ -640,14 +658,237 @@ def cmd_reset(args) -> int:
     return 0
 
 
+def cmd_stages(args) -> int:
+    """The names config declares. They are not verbs and never were.
+
+    `ticket --help` is the engine's surface and stays fixed; this is the
+    config's, and it changes when the YAML does. `--list` is accepted because
+    the issue asks for it by name, and is also what happens with no flag.
+    """
+    ctx = Context.load(repo=getattr(args, "repo", None), no_sync=True)
+    cfg = ctx.cfg
+    doc = {
+        "steps": [
+            {
+                "id": step.id,
+                "kind": step.kind,
+                "needs": list(step.needs),
+                "source": step.run or step.prompt or "",
+            }
+            for step in cfg.steps
+        ],
+        "reviews": [
+            {
+                "id": review.id,
+                "order": review.order,
+                "dispatch": review.dispatch,
+                "prompt": review.prompt,
+            }
+            for review in cfg.reviews
+        ],
+    }
+    if args.json:
+        print(json.dumps(doc, indent=2))
+        return 0
+    print(f"stages declared by {config_path()}")
+    print("steps")
+    for step in doc["steps"]:
+        parts = [step["source"]] if step["source"] else []
+        if step["needs"]:
+            parts.append(f"needs: {', '.join(step['needs'])}")
+        print(f"  {step['id']:<16} {step['kind']:<8} {'  '.join(parts)}".rstrip())
+    print("reviews")
+    for review in doc["reviews"]:
+        print(
+            f"  {review['id']:<16} {review['dispatch']:<8} "
+            f"order {review['order']}  {review['prompt']}"
+        )
+    if not doc["steps"] and not doc["reviews"]:
+        print("  (none)")
+    return 0
+
+
+def config_problems(cfg: Config) -> list[str]:
+    """Everything wrong with a config that still loaded.
+
+    Load-time checks — cycles, unknown keys, an unknown model alias — raise
+    before this is reached; `cmd_config` catches those and reports them the
+    same way. What is left is the filesystem: a step or review that points at
+    a prompt or script which is not there, is not readable, or (for a `run:`)
+    is not executable, and a `repos.<repo>.path` that is not a checkout.
+    """
+    problems: list[str] = []
+
+    def check(owner: str, label: str, relative: str, executable: bool = False) -> None:
+        path = cfg.path_to(relative)
+        if not path.is_file():
+            problems.append(f"{owner}: {label} {relative} is not a file ({path})")
+        elif not os.access(path, os.R_OK):
+            problems.append(f"{owner}: {label} {relative} is not readable ({path})")
+        elif executable and not os.access(path, os.X_OK):
+            problems.append(f"{owner}: {label} {relative} is not executable ({path})")
+
+    for step in cfg.steps:
+        if step.run:
+            check(f"step {step.id}", "run", step.run, executable=True)
+        if step.prompt:
+            check(f"step {step.id}", "prompt", step.prompt)
+        if step.model and step.model not in cfg.models:
+            problems.append(f"step {step.id}: model {step.model} is not in models:")
+    for review in cfg.reviews:
+        check(f"review {review.id}", "prompt", review.prompt)
+        if review.model and review.model not in cfg.models:
+            problems.append(
+                f"review {review.id}: model {review.model} is not in models:"
+            )
+    for repo in cfg.repos:
+        path = cfg.repo_path(repo)
+        if path and not path.is_dir():
+            problems.append(f"repos.{repo}: path {path} is not a directory")
+    return problems
+
+
+def cmd_config(args) -> int:
+    """Show the resolved config and say whether it works.
+
+    One command for both because they answer the same question: a config you
+    cannot see is one you cannot check. Anything that stops it loading at all
+    is reported here rather than raised, so `--validate` is the one place that
+    always tells you what is wrong.
+    """
+    path = config_path()
+    try:
+        # load_config, not Context.load: this reports what the file says, and
+        # `--no-sync` is a flag about this run, not a setting to echo back.
+        cfg = load_config()
+        if getattr(args, "repo", None):
+            cfg = cfg.for_repo(args.repo)
+    except TicketError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {"path": str(path), "valid": False, "problems": [str(exc)]},
+                    indent=2,
+                )
+            )
+        else:
+            print(f"config: {path}")
+            print(f"invalid: {exc}")
+        return 1
+
+    problems = config_problems(cfg)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "path": str(path),
+                    "store": str(cfg.store),
+                    "valid": not problems,
+                    "problems": problems,
+                    "models": cfg.models,
+                    "default_model": cfg.default_model,
+                    "sync": cfg.sync,
+                    "worktrees": {
+                        "enabled": cfg.worktrees.enabled,
+                        "root": str(cfg.worktrees.root),
+                        "branch": cfg.worktrees.branch,
+                    },
+                    "severities": [s.id for s in cfg.severities],
+                    "steps": [{"id": s.id, "kind": s.kind} for s in cfg.steps],
+                    "reviews": [
+                        {"id": r.id, "dispatch": r.dispatch} for r in cfg.reviews
+                    ],
+                    "repos": sorted(cfg.repos),
+                },
+                indent=2,
+            )
+        )
+        return 1 if problems else 0
+
+    if not args.validate:
+        print(f"config: {path}")
+        print(f"store:  {cfg.store}")
+        print(f"models: {', '.join(f'{k}={v}' for k, v in cfg.models.items())}")
+        print(f"default model: {cfg.default_model}")
+        print(f"sync: {cfg.sync}")
+        print(
+            f"worktrees: enabled={cfg.worktrees.enabled} "
+            f"root={cfg.worktrees.root} branch={cfg.worktrees.branch}"
+        )
+        print(f"severities: {', '.join(s.id for s in cfg.severities)}")
+        print(f"steps: {', '.join(s.id for s in cfg.steps) or '(none)'}")
+        print(f"reviews: {', '.join(r.id for r in cfg.reviews) or '(none)'}")
+        if cfg.repos:
+            print(f"repos: {', '.join(sorted(cfg.repos))}")
+    if problems:
+        print(f"invalid: {len(problems)} problem{'s' if len(problems) > 1 else ''}")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1
+    print("ok")
+    return 0
+
+
+def cmd_log(args) -> int:
+    """A step's recorded log, or a sentence saying why there is not one."""
+    ctx = Context.load(no_sync=True)
+    ticket = load_ticket(ctx, args.key)
+    inner = scoped(ctx, ticket)
+    inner.cfg.step(args.step)  # a name config does not declare is an error
+    record = (ticket.get("steps") or {}).get(args.step) or {}
+    print(ctx.store.read_log(record.get("log")))
+    return 0
+
+
 # --- parser ---------------------------------------------------------------
 
 
 VERBS: set[str] = set()
 
+# Which family a verb belongs to (issue #12). Management verbs mean the same
+# thing under every config; stage verbs take a name that only config can
+# supply. The split is what `--help` renders, and the only thing it changes.
+STAGE_VERBS = (
+    "run",
+    "skip",
+    "release",
+    "review",
+    "collect",
+    "fix",
+    "decide",
+    "effort",
+    "findings",
+    "reviews",
+)
+
+# Verbs whose two positionals are a key and a stage. The key comes first, as
+# it does everywhere else; `_unswap` forgives the order this used to take.
+STEP_AND_KEY_VERBS = {"run", "skip", "release", "reset", "log"}
+
+
+def _stage_help(entries: list[tuple[str, str]]) -> str:
+    """The block `--help` prints below argparse's own list.
+
+    Held out of the subparser list on purpose: these are engine verbs, but
+    every argument they take is a config name, and mixing the two families in
+    one alphabetical list is what made the surface feel heavy.
+    """
+    width = max((len(name) for name, _ in entries), default=0)
+    lines = [f"    {name:<{width}}  {text}" for name, text in entries]
+    return "\n".join(
+        [
+            "stage commands (engine verbs; every name they take comes from config):",
+            *lines,
+            "",
+            "The stages themselves are not verbs. List them with: ticket stages --list",
+        ]
+    )
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ticket")
+    parser = argparse.ArgumentParser(
+        prog="ticket", formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument(
         "--no-sync",
@@ -655,10 +896,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip the git fetch/fast-forward this normally does before every command",
     )
     parser.set_defaults(func=cmd_queue, dry_run=False, verb=None, no_sync=False)
-    sub = parser.add_subparsers(dest="verb")
+    sub = parser.add_subparsers(
+        dest="verb", title="management commands", metavar="<command>"
+    )
+    stage_help: list[tuple[str, str]] = []
 
     def add(name, func, **kwargs):
         VERBS.add(name)
+        if name in STAGE_VERBS:
+            # Popped, not set to SUPPRESS: argparse renders the sentinel as
+            # literal text rather than hiding the row. No `help` at all is
+            # what keeps a verb out of the subparser list.
+            stage_help.append((name, kwargs.pop("help", "")))
         p = sub.add_parser(name, **kwargs)
         p.set_defaults(func=func, dry_run=False)
         # default=SUPPRESS: a subparser's own copy of this flag must not clobber
@@ -687,19 +936,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
 
     p = add("run", cmd_run, help="run or re-run a named step")
-    p.add_argument("step")
     p.add_argument("key")
+    p.add_argument("step")
     p.add_argument("--dry-run", action="store_true")
 
     p = add("skip", cmd_skip, help="mark a step or review skipped")
-    p.add_argument("step")
     p.add_argument("key")
+    p.add_argument("step")
     p.add_argument("--reason", default="")
     p.add_argument("--dry-run", action="store_true")
 
     p = add("release", cmd_release, help="release a gate")
-    p.add_argument("step")
     p.add_argument("key")
+    p.add_argument("step")
     p.add_argument("--dry-run", action="store_true")
 
     p = add("review", cmd_review, help="dispatch one review")
@@ -762,7 +1011,52 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
 
+    p = add("log", cmd_log, help="what a step's last run wrote")
+    p.add_argument("key")
+    p.add_argument("step")
+
+    p = add("stages", cmd_stages, help="the steps and reviews config declares")
+    p.add_argument(
+        "--list",
+        action="store_true",
+        help="list them (the default, and the only thing this does)",
+    )
+    p.add_argument("--repo", help="resolve repo overrides before listing")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+    p = add("config", cmd_config, help="show the resolved config and check it")
+    p.add_argument(
+        "--validate", action="store_true", help="only report problems, not the config"
+    )
+    p.add_argument("--repo", help="resolve repo overrides first")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+    parser.epilog = _stage_help(stage_help)
     return parser
+
+
+def _unswap(args, store: Store) -> None:
+    """Forgive `ticket skip <step> <KEY>`, the order these verbs used to take.
+
+    That order is the whole of issue #12's headline bug: `run`, `skip` and
+    `release` read `<step> <key>` while every other verb read `<key>` first,
+    so `ticket skip KEY-1 evaluate` looked up a ticket named `evaluate` and
+    answered "evaluate is not tracked" about a step `show` had just listed.
+
+    The swap is taken only when the first word names no tracked ticket and the
+    second one does, so it can never quietly pick the wrong ticket.
+    """
+    key = getattr(args, "key", None)
+    step = getattr(args, "step", None)
+    if not key or not step or not is_safe_key(step):
+        return
+    if store.read_ticket(key) or not store.read_ticket(step):
+        return
+    args.key, args.step = step, key
+    print(
+        f"note: the key comes first now — ticket {args.verb} {args.key} {args.step}",
+        file=sys.stderr,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -781,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
         # code and is called directly by the tests, so turn it back into one.
         return int(exc.code or 0)
     try:
+        if args.verb in STEP_AND_KEY_VERBS:
+            _unswap(args, Store(load_config().store))
         key = getattr(args, "key", None)
         # Before anything interpolates the key into a path — the lock below
         # does it first, ahead of any command's own validation.
