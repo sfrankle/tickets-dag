@@ -405,3 +405,50 @@ def test_marker_is_optional(tmp_path):
     cfg = load_config(write(tmp_path, SEVERITIES.replace('    marker: "N"\n', "")))
     assert cfg.severities[0].marker is None
     assert cfg.severity_for_marker("N") is None
+
+
+PARSE = SAMPLE + textwrap.dedent("""
+    parse:
+      sources:
+        - author: odd-bot[bot]
+          bullet: '^\\s{0,3}>>\\s+'
+""")
+
+
+def test_parse_sources_are_optional(tmp_path):
+    """The built-in grammar is the road; a profile is the escape hatch."""
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert cfg.parse_sources == ()
+    assert cfg.parse_source("odd-bot[bot]") is None
+
+
+def test_a_parse_source_is_found_by_author(tmp_path):
+    cfg = load_config(write(tmp_path, PARSE))
+    assert cfg.parse_source("odd-bot[bot]").bullet == r"^\s{0,3}>>\s+"
+    assert cfg.parse_source("someone-else") is None
+    assert cfg.parse_source(None) is None
+
+
+def test_a_parse_source_needs_an_author(tmp_path):
+    text = PARSE.replace("- author: odd-bot[bot]\n", "- ")
+    with pytest.raises(ConfigError, match="parse source"):
+        load_config(write(tmp_path, text))
+
+
+def test_a_bad_parse_regex_fails_at_load(tmp_path):
+    """A typo here should fail on load, not on the one review that needs it."""
+    text = PARSE.replace(r"'^\s{0,3}>>\s+'", "'^(unclosed'")
+    with pytest.raises(ConfigError, match="not a valid regex"):
+        load_config(write(tmp_path, text))
+
+
+def test_a_details_override_needs_its_named_groups(tmp_path):
+    text = PARSE.replace(r"bullet: '^\s{0,3}>>\s+'", "details: '<block>(.*?)</block>'")
+    with pytest.raises(ConfigError, match="named groups"):
+        load_config(write(tmp_path, text))
+
+
+def test_a_parse_source_that_overrides_nothing_is_an_error(tmp_path):
+    text = PARSE.replace("      bullet: '^\\s{0,3}>>\\s+'\n", "")
+    with pytest.raises(ConfigError, match="overrides nothing"):
+        load_config(write(tmp_path, text))
