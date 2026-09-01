@@ -150,8 +150,7 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     for step in scoped(ctx, ticket).cfg.steps:
         record = (ticket.get("steps") or {}).get(step.id) or {}
         log = ctx.store.log_file(record.get("log"))
-        # A recorded path can outlive its file; say so here rather than let
-        # whatever goes to read it fall over.
+        # A recorded path can outlive its file; say so here rather than let whatever goes to read it fall over.
         missing = "  (log missing)" if log and not log.is_file() else ""
         print(f"  {step.id:<16} {record.get('status', '-')}{missing}")
     print(
@@ -269,8 +268,7 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
 def warn_about_orphans(ctx: Context, ticket: dict) -> None:
     """Say so when state records steps this config has never heard of.
 
-    The unscoped config on purpose: a `repos.<repo>.steps.skip` removes a step
-    from the resolved config legitimately, and that is not a dead id.
+    The unscoped config on purpose: a `repos.<repo>.steps.skip` removes a step from the resolved config legitimately, and that is not a dead id.
     """
     dead = orphan_steps(ctx.cfg, ticket)
     if dead:

@@ -3,9 +3,8 @@
 # state with it. Set it only to split the two apart. Relative values, here and
 # in worktrees.root, resolve against this file's directory, not the cwd.
 #
-# What this file points at lives under `input/` beside it — `input/prompts/`
-# and `input/scripts/`. State lives under `tickets/<KEY>/`, one directory per
-# ticket, with `locks/` alongside it.
+# What this file points at lives under `input/` beside it — `input/prompts/` and `input/scripts/`.
+# State lives under `tickets/<KEY>/`, one directory per ticket, with `locks/` alongside it.
 store: ~/.ticket
 
 models:

@@ -9,10 +9,8 @@
           logs/                          one file per run
       locks/
 
-Everything one ticket knows is in one directory, so a ticket can be read,
-archived or deleted by looking at a single place. A store written by an older
-version is type-grouped (`tickets/KEY.json`, `prs/`, `findings/`, `logs/KEY/`);
-it is migrated in place the first time a `Store` is opened on it.
+Everything one ticket knows is in one directory, so a ticket can be read, archived or deleted by looking at a single place.
+A store written by an older version is type-grouped (`tickets/KEY.json`, `prs/`, `findings/`, `logs/KEY/`); it is migrated in place the first time a `Store` is opened on it.
 
 Concurrency is handled by writing to a temp file and renaming, plus an advisory
 lock file per ticket. The CLI is single-user and single-machine; this is enough.
@@ -30,15 +28,14 @@ from pathlib import Path, PurePosixPath
 from .errors import StoreError
 
 UNKEYED = "_unkeyed"
-"""Where a PR whose ticket cannot be named lands. Nothing writes a `state.json`
-there, so it never shows up as a ticket; a later read still finds the file."""
+"""Where a PR whose ticket cannot be named lands.
+Nothing writes a `state.json` there, so it never shows up as a ticket; a later read still finds the file."""
 
 
 def pr_slug(pr_ref: str) -> str:
     """`acme/api#115` -> `acme-api_115`, the on-disk name for a PR.
 
-    The `_` before the number matters: without it `acme/api-115#7` and
-    `acme/api#1157` would land in the same file.
+    The `_` before the number matters: without it `acme/api-115#7` and `acme/api#1157` would land in the same file.
     """
     repo, _, number = pr_ref.partition("#")
     return f"{repo.replace('/', '-')}_{number}"
@@ -65,9 +62,7 @@ class Store:
     def _key_for_pr(self, pr_ref: str) -> str:
         """The ticket directory a PR's documents belong in.
 
-        A PR is addressed by its ref alone, so the key is recovered: from a
-        file already on disk, else from the ticket that registered the PR,
-        else `_unkeyed` — a PR document is never dropped for want of a key.
+        A PR is addressed by its ref alone, so the key is recovered: from a file already on disk, else from the ticket that registered the PR, else `_unkeyed` — a PR document is never dropped for want of a key.
         """
         slug = pr_slug(pr_ref)
         tickets = self.root / "tickets"
@@ -90,8 +85,7 @@ class Store:
     def log_path(self, key: str, step: str) -> Path:
         """A fresh file for this run, under the ticket's own `logs/`.
 
-        One file per run, not per day: a step that is re-run after a failure
-        must not append to the log of the run that failed.
+        One file per run, not per day: a step that is re-run after a failure must not append to the log of the run that failed.
         """
         directory = self.ticket_dir(key) / "logs"
         directory.mkdir(parents=True, exist_ok=True)
@@ -106,8 +100,7 @@ class Store:
     def relative(self, path: Path) -> str:
         """How a path is recorded in state: relative to the store root.
 
-        Recorded absolute, a log path stops resolving as soon as the store
-        moves, and nothing re-checks it (issue #7).
+        Recorded absolute, a log path stops resolving as soon as the store moves, and nothing re-checks it (issue #7).
         """
         path = Path(path)
         try:
@@ -125,8 +118,8 @@ class Store:
     def read_log(self, recorded: str | None) -> str:
         """A step's log, or a sentence saying why there isn't one.
 
-        A recorded path can outlive its file — a moved store, a hand-rename, a
-        cleaned-out directory. That is worth saying plainly, not raising over.
+        A recorded path can outlive its file — a moved store, a hand-rename, a cleaned-out directory.
+        That is worth saying plainly, not raising over.
         """
         path = self.log_file(recorded)
         if path is None:
@@ -183,8 +176,7 @@ class Store:
         return self._read(self._pr_file(pr_ref))
 
     def write_pr(self, data: dict) -> None:
-        # The document names its ticket, so a first write does not have to
-        # guess where it goes.
+        # The document names its ticket, so a first write does not have to guess where it goes.
         self._write(self._pr_file(data["pr"], data.get("key")), data)
 
     # --- findings ------------------------------------------------------
@@ -250,9 +242,7 @@ def _load(path: Path) -> dict | None:
 def _claim(source: Path, destination: Path) -> bool:
     """Move `source` onto `destination` unless something is already there.
 
-    Never clobbers: a store that has been half-migrated by hand keeps the file
-    it already has, and the one that could not be placed is left where it is
-    for a human to look at rather than deleted.
+    Never clobbers: a store that has been half-migrated by hand keeps the file it already has, and the one that could not be placed is left where it is for a human to look at rather than deleted.
     """
     if destination.exists():
         return False
@@ -270,18 +260,15 @@ def _needs_migration(root: Path) -> bool:
 def migrate(root: Path) -> None:
     """Move a type-grouped store into the by-key layout, in place.
 
-    Idempotent: it does nothing at all once there is no `prs/`, `findings/` or
-    `logs/` directory and no loose `tickets/*.json`. Nothing is deleted —
-    files move, empty directories go, and a file whose destination is taken
-    stays put.
+    Idempotent: it does nothing at all once there is no `prs/`, `findings/` or `logs/` directory and no loose `tickets/*.json`.
+    Nothing is deleted — files move, empty directories go, and a file whose destination is taken stays put.
     """
     if not root.is_dir() or not _needs_migration(root):
         return
 
     tickets = root / "tickets"
 
-    # Tickets first: the PR and findings documents are placed by the key their
-    # ticket carries, so the ticket directories have to exist to be found.
+    # Tickets first: the PR and findings documents are placed by the key their ticket carries, so the ticket directories have to exist to be found.
     for path in sorted(tickets.glob("*.json")):
         _claim(path, tickets / path.stem / "state.json")
 
@@ -327,9 +314,7 @@ def _key_of_pr(tickets: Path, pr_ref: str | None) -> str | None:
 def _rewrite_log_paths(tickets: Path) -> None:
     """Point every recorded log at its new home, relative to the store root.
 
-    Only the file name survives the move, which is all that identifies a log:
-    they were always `<store>/logs/<KEY>/<name>` and are now
-    `tickets/<KEY>/logs/<name>`.
+    Only the file name survives the move, which is all that identifies a log: they were always `<store>/logs/<KEY>/<name>` and are now `tickets/<KEY>/logs/<name>`.
     """
     for path in sorted(tickets.glob("*/state.json")):
         doc = _load(path)

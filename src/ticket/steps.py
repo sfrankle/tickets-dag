@@ -145,9 +145,7 @@ def run_step(
 
     log_file.write_text(output)
 
-    # Recorded relative to the store root, so the pointer survives the store
-    # being moved; `StepResult.log` stays absolute because it is printed for a
-    # human to open.
+    # Recorded relative to the store root, so the pointer survives the store being moved; `StepResult.log` stays absolute because it is printed for a human to open.
     record: dict = {"status": "done", "at": now(), "log": store.relative(log_file)}
 
     pr_ref = None

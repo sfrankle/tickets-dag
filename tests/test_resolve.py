@@ -365,8 +365,8 @@ def test_skipping_a_review_after_it_was_dispatched_does_not_wedge_collect(cfg):
 
 
 def test_orphaned_recorded_steps_are_named(cfg):
-    """A config edit can collapse or rename steps; the state file keeps the
-    old ids. They are not part of the DAG any more, so they are reported."""
+    """A config edit can collapse or rename steps; the state file keeps the old ids.
+    They are not part of the DAG any more, so they are reported."""
     ticket = ticket_doc(steps=done("evaluate", "jira-sync", "worktree"))
     assert orphan_steps(cfg, ticket) == ["jira-sync", "worktree"]
 

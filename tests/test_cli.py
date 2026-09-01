@@ -212,8 +212,8 @@ def test_repo_overrides_are_applied_for_the_ticket_repo(env, capsys, monkeypatch
 def test_next_warns_about_recorded_steps_the_config_no_longer_defines(
     env, capsys, tmp_path
 ):
-    """A config edit collapsed two steps into one; the state file still holds
-    the old ids. They are kept, excluded from the DAG, and named."""
+    """A config edit collapsed two steps into one; the state file still holds the old ids.
+    They are kept, excluded from the DAG, and named."""
     main(["track", "ABC-123", "--repo", "acme/api"])
     store = Store(tmp_path / "store")
     ticket = store.read_ticket("ABC-123")
