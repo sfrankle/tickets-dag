@@ -444,10 +444,8 @@ def cmd_collect(args) -> int:
 def cmd_fix(args) -> int:
     """One run, one finding.
 
-    A run used to be able to work the whole queue, which meant a second
-    handoff going out while the first was still with the fixer — and a fixer
-    that runs one action per PR drops the second. The queue is worked by
-    running this again.
+    A run used to be able to work the whole queue, which meant a second handoff going out while the first was still with the fixer — and a fixer that runs one action per PR drops the second.
+    The queue is worked by running this again.
     """
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
@@ -466,17 +464,13 @@ def cmd_fix(args) -> int:
     effort = (queue.get(finding_id) or {}).get("effort")
     remaining = [f["id"] for f in open_findings(inner.store.read_findings(pr_ref))]
 
-    # An easy fix is committed by someone else, on the remote, minutes later, so
-    # this run waits for that commit rather than leaving the next run to hand
-    # out another finding on top of a job still in flight. A hard fix commits
-    # locally: the remote head never moves, so waiting on it would poll until it
-    # gave up.
+    # An easy fix is committed by someone else, on the remote, minutes later, so this run waits for that commit rather than leaving the next run to hand out another finding on top of a job still in flight.
+    # A hard fix commits locally: the remote head never moves, so waiting on it would poll until it gave up.
     wait_here = effort == "easy" and not args.no_wait and not args.dry_run
     before = None
     if wait_here:
-        # The live head, not the stored one: the stored value is None for a PR
-        # we have only ever collected from, and stale once an earlier fix moved
-        # the head. Either makes the wait below return immediately.
+        # The live head, not the stored one: the stored value is None for a PR we have only ever collected from, and stale once an earlier fix moved the head.
+        # Either makes the wait below return immediately.
         before = gh.pr_head(pr_ref)
 
     status = fix_module.fix_one(
@@ -501,8 +495,7 @@ def cmd_fix(args) -> int:
         return 0
 
     head = fix_module.wait_for_head(pr_ref, before)
-    # ensure_pr, not read_pr: the document does not exist yet when the finding
-    # came from a source we only ever collected.
+    # ensure_pr, not read_pr: the document does not exist yet when the finding came from a source we only ever collected.
     pr = reviews_module.ensure_pr(inner.store, ticket, pr_ref)
     pr["head"] = head
     inner.store.write_pr(pr)

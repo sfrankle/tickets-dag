@@ -1,28 +1,18 @@
 """Select one finding, hand it to the fixer the config declares, verify it landed.
 
-The engine's whole job here is selection and handoff. What actually fixes an
-`easy` finding is a script the config names under `fix.easy.run:` — a comment to
-a review bot, a queue, a patch mailer, whatever the site does — and the finding
-reaches it through the environment and stdin. No fixer's protocol is written
-into this module, so pointing `fix` at another company's script changes nothing
-in the engine.
+The engine's whole job here is selection and handoff.
+What actually fixes an `easy` finding is a script the config names under `fix.easy.run:` — a comment to a review bot, a queue, a patch mailer, whatever the site does — and the finding reaches it through the environment and stdin.
+No fixer's protocol is written into this module, so pointing `fix` at another company's script changes nothing in the engine.
 
-Effort is a property of the finding, not of the call: `easy` goes to that
-script, `hard` gets a local Claude session and this module commits. A finding
-with no effort is refused rather than guessed at, because severity says nothing
-about effort.
+Effort is a property of the finding, not of the call: `easy` goes to that script, `hard` gets a local Claude session and this module commits.
+A finding with no effort is refused rather than guessed at, because severity says nothing about effort.
 
-Resolution is a `git log` trailer scan — deterministic, zero tokens, and it
-works for a remote fixer's commits too because the script asks for the trailer.
-Those commits land on the *remote*, so every scan fetches first; without that
-the easy path would never close a single finding.
+Resolution is a `git log` trailer scan — deterministic, zero tokens, and it works for a remote fixer's commits too because the script asks for the trailer.
+Those commits land on the *remote*, so every scan fetches first; without that the easy path would never close a single finding.
 
-The trailer carries `finding_ref`, a hash of the PR reference and the finding
-id, not the id itself. Ids are minted per PR and restart at `f01`, so a scan of
-HEAD and `@{upstream}` for `Finding: f01` used to match a commit from an
-entirely different PR and close a finding nothing had touched — after which the
-run stopped waiting for the fixer and posted the next one on top of it. A ref is
-unique per PR, and it keeps a store-local handle out of a public comment.
+The trailer carries `finding_ref`, a hash of the PR reference and the finding id, not the id itself.
+Ids are minted per PR and restart at `f01`, so a scan of HEAD and `@{upstream}` for `Finding: f01` used to match a commit from an entirely different PR and close a finding nothing had touched — after which the run stopped waiting for the fixer and posted the next one on top of it.
+A ref is unique per PR, and it keeps a store-local handle out of a public comment.
 """
 
 from __future__ import annotations
@@ -56,8 +46,8 @@ Do not commit; the caller commits.
 def finding_ref(pr_ref: str, finding_id: str) -> str:
     """A short, stable, PR-scoped handle for one finding.
 
-    Public: it is what a fixer is asked to put in its commit message. It says
-    nothing about the store, and two PRs' `f01` never collide.
+    Public: it is what a fixer is asked to put in its commit message.
+    It says nothing about the store, and two PRs' `f01` never collide.
     """
     digest = hashlib.sha1(f"{pr_ref}\x00{finding_id}".encode()).hexdigest()
     return digest[:12]
@@ -80,8 +70,7 @@ def worktree_of(ticket: dict) -> Path:
 def scan_trailers(worktree: Path) -> dict[str, str]:
     """finding ref -> commit sha, newest wins.
 
-    Scans the upstream ref as well as HEAD, because a remote fixer's commits are
-    on the remote and may not have been merged into the local branch yet.
+    Scans the upstream ref as well as HEAD, because a remote fixer's commits are on the remote and may not have been merged into the local branch yet.
     """
     revisions = ["HEAD"]
     try:
@@ -119,8 +108,8 @@ def _find(doc: dict, finding_id: str) -> dict:
 def resolve_from_git(cfg: Config, store: Store, ticket: dict, pr_ref: str) -> list[str]:
     doc = store.read_findings(pr_ref)
     worktree = worktree_of(ticket)
-    # A remote fixer's commits are on the remote. Without this the easy path
-    # never closes anything.
+    # A remote fixer's commits are on the remote.
+    # Without this the easy path never closes anything.
     if cfg.sync:
         reason = gh.sync(worktree)
         if reason:
@@ -149,10 +138,8 @@ def wait_for_head(
 ) -> str:
     """Wait for the fixer's commit, saying so the whole time.
 
-    A remote fixer runs one action per PR and silently drops a second dispatch,
-    so the run that handed it a finding is the run that has to wait. That wait
-    is minutes long: it announces itself and counts, because a silent five
-    minutes is indistinguishable from a hang.
+    A remote fixer runs one action per PR and silently drops a second dispatch, so the run that handed it a finding is the run that has to wait.
+    That wait is minutes long: it announces itself and counts, because a silent five minutes is indistinguishable from a hang.
     """
     report(
         f"waiting for a new commit on {pr_ref} — up to "
@@ -173,11 +160,11 @@ def wait_for_head(
 def finding_env(
     cfg: Config, ticket: dict, pr_ref: str, finding: dict
 ) -> dict[str, str]:
-    """What a fix script is told. The same base a step gets, plus the finding.
+    """What a fix script is told.
 
-    The id is here and nowhere else: a script needs to know which finding it is
-    working on, and that is a private channel. What the script chooses to make
-    public is the script's business.
+    The same base a step gets, plus the finding.
+    The id is here and nowhere else: a script needs to know which finding it is working on, and that is a private channel.
+    What the script chooses to make public is the script's business.
     """
     env = steps.step_env(cfg, ticket)
     env["TICKET_PR"] = pr_ref
@@ -209,8 +196,7 @@ def _fix_easy(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
             [str(script)],
             cwd=steps.workdir(cfg, ticket),
             env=finding_env(cfg, ticket, pr_ref, finding),
-            # The whole finding, for a script that wants more than the
-            # environment carries.
+            # The whole finding, for a script that wants more than the environment carries.
             stdin_text=json.dumps(finding, indent=2),
         )
     except OSError as exc:
@@ -320,9 +306,7 @@ def fix_one(
     if finding.get("status") != "open":
         raise TicketError(f"{finding_id} is {finding.get('status')}, not open")
 
-    # A finding already out with a fixer must not go out again: a second
-    # dispatch while the first is in flight is how a fixer that runs one action
-    # per PR ends up dropping both.
+    # A finding already out with a fixer must not go out again: a second dispatch while the first is in flight is how a fixer that runs one action per PR ends up dropping both.
     sent = finding.get("sent")
     if sent and not force:
         raise TicketError(

@@ -100,8 +100,7 @@ def test_trailer_shape():
 
 
 def test_a_ref_is_scoped_to_its_pr():
-    """Ids restart at f01 on every PR, so the id alone cannot be the trailer:
-    a scan of the branch would match an unrelated PR's commit."""
+    """Ids restart at f01 on every PR, so the id alone cannot be the trailer: a scan of the branch would match an unrelated PR's commit."""
     assert finding_ref("acme/api#115", "f01") != finding_ref("acme/api#116", "f01")
     assert finding_ref("acme/api#115", "f01") == finding_ref("acme/api#115", "f01")
 
@@ -209,9 +208,8 @@ def test_resolve_from_git_marks_findings_resolved(cfg, store, worktree):
 
 
 def test_a_trailer_from_another_pr_does_not_close_a_finding(cfg, store, worktree):
-    """Issue #13, run 1: ids restart at f01 on every PR, and the scan reads the
-    whole branch. An older PR's `Finding: f01` closed the new PR's f01 on sight,
-    which is why `fix` reported `f01: resolved` for work nobody had done."""
+    """Issue #13, run 1: ids restart at f01 on every PR, and the scan reads the whole branch.
+    An older PR's `Finding: f01` closed the new PR's f01 on sight, which is why `fix` reported `f01: resolved` for work nobody had done."""
     subprocess.run(
         [
             "git",
@@ -261,8 +259,7 @@ def easy_finding():
 def test_an_easy_finding_goes_to_the_configured_script(
     cfg, store, worktree, fake_bin, capsys
 ):
-    """The engine posts nothing itself: what fixes an easy finding is a script
-    the config names, so another shop's protocol is another shop's file."""
+    """The engine posts nothing itself: what fixes an easy finding is a script the config names, so another shop's protocol is another shop's file."""
     seed(store, easy_finding())
     fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
     out = capsys.readouterr().out
@@ -316,8 +313,7 @@ def test_a_failing_fix_script_is_an_error_not_a_silent_pass(
 def test_a_finding_already_with_the_fixer_is_not_sent_again(
     cfg, store, worktree, fake_bin, capsys
 ):
-    """Issue #13: a second handoff while the first is in flight is how a fixer
-    that runs one action per PR ends up dropping both."""
+    """Issue #13: a second handoff while the first is in flight is how a fixer that runs one action per PR ends up dropping both."""
     seed(store, easy_finding())
     fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01")
     with pytest.raises(TicketError, match="handed to the easy fixer"):

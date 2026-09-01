@@ -148,15 +148,11 @@ class Review:
 class Fix:
     """Where each effort route hands a finding off to.
 
-    `easy` runs `easy_run`, a local script: what fixes an easy finding is a
-    site's own business — a PR comment to a bot, a queue, a patch mailer — and
-    the engine only knows how to select the finding and run the script. `hard`
-    is a local Claude session, so it takes the same model and argv knobs any
-    handoff does, agent mode above all, plus an optional prompt of the site's
-    own in place of the built-in one.
+    `easy` runs `easy_run`, a local script: what fixes an easy finding is a site's own business — a PR comment to a bot, a queue, a patch mailer — and the engine only knows how to select the finding and run the script.
+    `hard` is a local Claude session, so it takes the same model and argv knobs any handoff does, agent mode above all, plus an optional prompt of the site's own in place of the built-in one.
 
-    Separate from any step: a fix is not in the DAG. Keying it off a step id
-    would put a step name back in the engine.
+    Separate from any step: a fix is not in the DAG.
+    Keying it off a step id would put a step name back in the engine.
     """
 
     model: str | None = None
@@ -440,8 +436,7 @@ def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
         raise ConfigError(
             "fix.easy: needs run: — the script an easy finding is handed to"
         )
-    # `model:`/`args:` at the top level still mean the hard route: it was the
-    # only route with a session before `easy` had a script of its own.
+    # `model:`/`args:` at the top level still mean the hard route: it was the only route with a session before `easy` had a script of its own.
     model = hard.get("model") or raw.get("model") or default_model
     if not model:
         raise ConfigError("fix: has no model: and there is no defaults.model")

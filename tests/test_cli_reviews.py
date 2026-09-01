@@ -202,9 +202,7 @@ def test_effort_overrides(env, fake_bin, capsys):
 
 
 def test_fix_without_waiting_survives_a_missing_pr_document(env, fake_bin, capsys):
-    """cmd_fix must not crash reading `.get("head")` off a PR doc that has
-    not been written yet (no dispatch/collection has run), when the wait is
-    not wanted — the head is only needed on the waiting path."""
+    """cmd_fix must not crash reading `.get("head")` off a PR doc that has not been written yet (no dispatch/collection has run), when the wait is not wanted — the head is only needed on the waiting path."""
     from ticket.store import Store
 
     started(fake_bin)
@@ -251,8 +249,7 @@ def _easy(summary="s"):
 
 
 def test_fix_works_one_finding_per_run(env, fake_bin, monkeypatch, capsys):
-    """Issue #13: a run that handed out a second finding while the first was
-    still with the fixer got both dropped — the fixer runs one action per PR.
+    """Issue #13: a run that handed out a second finding while the first was still with the fixer got both dropped — the fixer runs one action per PR.
     One run, one finding, and it waits for the commit before returning."""
     from ticket import cli
 

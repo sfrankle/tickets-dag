@@ -50,8 +50,7 @@ def test_the_example_fix_block_can_write_files():
 
 
 def test_the_example_config_points_fix_at_a_script_and_a_prompt():
-    """Site policy — what actually fixes an easy finding — ships as a script
-    here, not as a branch in the engine."""
+    """Site policy — what actually fixes an easy finding — ships as a script here, not as a branch in the engine."""
     cfg = load_config(EXAMPLES / "config.yml")
     assert cfg.path_to(cfg.fix.easy_run).is_file()
     assert cfg.path_to(cfg.fix.hard_prompt).is_file()
@@ -63,8 +62,7 @@ def test_the_easy_fix_script_is_executable():
 
 
 def test_the_easy_fix_script_keeps_the_store_local_id_out_of_the_comment():
-    """The finding's content goes in the comment; the id stays in the store,
-    and reaches the script through the environment instead."""
+    """The finding's content goes in the comment; the id stays in the store, and reaches the script through the environment instead."""
     text = (EXAMPLES / "input" / "scripts" / "fix-easy.sh").read_text()
     body = text.split("body=$(")[1].split("EOF\n)")[0]
     assert "TICKET_FINDING_ID" not in body
