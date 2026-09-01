@@ -195,6 +195,39 @@ def test_fix_defaults_to_the_default_model_with_no_args(tmp_path):
     assert (cfg.fix.model, cfg.fix.args) == ("opus", ())
 
 
+def test_fix_declares_the_script_an_easy_finding_is_handed_to(tmp_path):
+    """The engine has no fixer of its own: `easy` is whatever the site runs."""
+    path = tmp_path / "config.yml"
+    path.write_text(SAMPLE + "\nfix:\n  easy:\n    run: scripts/fix-easy.sh\n")
+    assert load_config(path).fix.easy_run == "scripts/fix-easy.sh"
+
+
+def test_fix_easy_without_a_script_is_an_error(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(SAMPLE + "\nfix:\n  easy:\n    model: opus\n")
+    with pytest.raises(ConfigError, match=r"fix\.easy"):
+        load_config(path)
+
+
+def test_fix_hard_takes_its_own_model_prompt_and_args(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(
+        SAMPLE
+        + "\nfix:\n  hard:\n    model: opus\n    prompt: prompts/fix.md\n"
+        + "    args: [--permission-mode, acceptEdits]\n"
+    )
+    fix = load_config(path).fix
+    assert (fix.model, fix.hard_prompt) == ("opus", "prompts/fix.md")
+    assert fix.args == ("--permission-mode", "acceptEdits")
+
+
+def test_fix_model_and_args_at_the_top_level_still_mean_the_hard_route(tmp_path):
+    """`fix:` had one route before `easy` had a script of its own."""
+    path = tmp_path / "config.yml"
+    path.write_text(SAMPLE + "\nfix:\n  args: [--permission-mode, acceptEdits]\n")
+    assert load_config(path).fix.args == ("--permission-mode", "acceptEdits")
+
+
 def test_an_unknown_fix_model_fails_at_load(tmp_path):
     path = tmp_path / "config.yml"
     path.write_text(SAMPLE + "\nfix:\n  model: sonnet\n")

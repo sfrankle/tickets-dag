@@ -120,12 +120,27 @@ steps:
     prompt: input/prompts/describe.md
     needs: [draft-pr]
 
-# The local session a `hard` finding gets. Not a step — a fix is not in the
-# DAG — but it is a handoff that has to write files, so it needs agent mode
-# for the same reason `implement` does. `model:` defaults to defaults.model.
+# Where each effort route hands a finding off. Not a step — a fix is not in the
+# DAG — but both routes are handoffs, so they take the same knobs.
+#
+# `easy.run` is site policy and lives entirely in that script: the engine
+# selects one finding, passes it in the environment (TICKET_FINDING_ID, _REF,
+# _TRAILER, _FILE, _SUMMARY, _BODY, _SEVERITY, _EFFORT, and the finding as JSON
+# on stdin) and runs the script in the ticket's checkout. The one shipped here
+# asks a Claude GitHub bot with an `/edit` comment; point this at your own and
+# nothing in the tool changes. Leave it unset and `easy` findings are refused
+# rather than guessed at.
+#
+# `hard` is a local Claude session, so it needs agent mode for the same reason
+# `implement` does. `model:` defaults to defaults.model, and `prompt:` is
+# optional — omit it and the built-in one is used.
 fix:
-  model: opus
-  args: [--permission-mode, acceptEdits]
+  easy:
+    run: input/scripts/fix-easy.sh
+  hard:
+    model: opus
+    prompt: input/prompts/fix.md
+    args: [--permission-mode, acceptEdits]
 
 # Only the AI reviews we dispatch. Reviews your repo already requires — bots,
 # other agents, humans — are never listed here. They are collected as sources

@@ -76,7 +76,7 @@ ticket collect ABC-123 --recollect 5049842015   # read one collected source agai
 ticket findings ABC-123
 ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
-ticket fix ABC-123 --all          # work the whole queue, waiting between each
+ticket fix ABC-123 --no-wait      # hand it off without waiting for the commit
 ticket effort ABC-123 f02 hard    # override how a finding gets fixed
 ticket decide ABC-123 f03 "covered by ABC-140"
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
@@ -123,11 +123,30 @@ It never rebases, never merges non-fast-forward, and never touches uncommitted w
 **Severity and effort are different questions.** Severity says how important a finding is.
 The names and their markers are yours, declared under `severities:` — 🔴 blocking, 🟡 maintenance, 🔵 architecture is what the example config ships and what you get if you leave the key out, not a set the engine believes in.
 Config order is importance order, and one entry is `default:`, the severity a Haiku-parsed finding falls back to when it names one you never declared.
-Effort (`easy`/`hard`) says how contained the fix is: `easy` goes back to the gh Claude bot as an `/edit` comment, `hard` gets a local Claude session.
+Effort (`easy`/`hard`) says how contained the fix is: `easy` is handed to a script you declare, `hard` gets a local Claude session.
 A blocking finding can be a one-line fix.
 Effort is set by Haiku at ingestion and overridden with `ticket effort`; it is never derived from severity.
-The local session a `hard` fix runs is configured under `fix:` — `model:` (defaults to `defaults.model`) and `args:`, which is where agent mode goes.
-Without it the session can read but not write, and every hard fix ends in "changed nothing".
+
+**What fixes a finding is yours.** `ticket fix` selects one finding and hands it off; it composes no comment and knows no fixer's protocol.
+
+```yaml
+fix:
+  easy:
+    run: input/scripts/fix-easy.sh   # site policy lives here
+  hard:
+    model: opus                      # defaults to defaults.model
+    prompt: input/prompts/fix.md     # optional; there is a built-in one
+    args: [--permission-mode, acceptEdits]
+```
+
+The script runs in the ticket's checkout with the finding in its environment — `TICKET_FINDING_ID`, `_REF`, `_TRAILER`, `_FILE`, `_SUMMARY`, `_BODY`, `_SEVERITY`, `_EFFORT`, alongside the usual `TICKET_KEY`, `TICKET_REPO`, `TICKET_PR`, `TICKET_WORKTREE` — and the whole finding as JSON on stdin.
+The one in `examples/` asks a Claude GitHub bot with an `/edit` comment, which is one company's protocol; point `run:` at your own and nothing in the engine changes.
+Leave `fix.easy` out and an easy finding is refused rather than guessed at.
+`hard` is a local session, so `args:` is where agent mode goes; without it the session can read but not write, and every hard fix ends in "changed nothing".
+
+**One run, one finding.** `ticket fix` acts on a single finding and then waits for its commit, printing where it has got to — a remote fixer runs one action per PR and silently drops a second dispatch, so handing out a second finding while the first is in flight loses both.
+A finding already with a fixer is refused until its commit lands, or until `--force` sends it again.
+`--no-wait` returns as soon as the handoff is made; a `hard` fix never waits, because it commits locally and the remote head does not move.
 
 **The review format is the tool's contract.** A review this tool dispatches is expected to answer in one `<details>` block per severity — keyed by that severity's configured marker in the `<summary>` — with each finding naming its file in backticks, `None.` in an empty block, and a closing `**Verdict:**` line.
 That shape parses to findings for free.
@@ -155,7 +174,8 @@ That record carries a `reread_at` alongside its original `at`, so the first read
 A re-read that recovers nothing is not recorded as work at all: it prints nothing and rewrites nothing, because a record left empty is exactly the record that gets re-read again next run.
 `--recollect` naming a source that is not on the PR is an error and exits non-zero — the sources that were there are still collected first.
 
-**GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.
+**GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI and a dispatched `bot` review rides a Claude GitHub bot's `/review` comment protocol; there is no forge abstraction and none is planned.
+How an `easy` finding gets fixed is not part of that contract — it is the script `fix.easy.run` names.
 The tracker is the other way round — the engine never learns what one is.
 Set `tracker.summary` to an argv list and `refresh` runs it, substitutes `{key}`, and keeps the first line of stdout as the summary:
 
@@ -172,10 +192,12 @@ A command whose binary is missing is skipped the same way — the summary is a c
 Set `key_pattern:` to a regex if you want the stricter rule your tracker implies.
 A bare key is shorthand for `show`, and a verb always wins that ambiguity — `ticket refresh` is the verb even if you have a ticket keyed `refresh`.
 
-Resolution is a `git log` scan for `Finding: fNN` trailers — one commit per finding, zero tokens, and it works for the bot's commits too.
+Resolution is a `git log` scan for `Finding: <ref>` trailers — one commit per finding, zero tokens, and it works for a remote fixer's commits too.
+The ref is a hash of the PR reference and the finding id, not the id: ids are minted per PR and restart at `f01`, so scanning a branch for `Finding: f01` used to match an unrelated PR's commit and close a finding nobody had fixed.
+It also keeps a store-local handle out of a public comment.
 
 **Trust boundary.** Findings are minted from PR reviews and PR comments, so their text is written by whoever can comment on the PR.
-That text is spliced into the `/edit` instruction sent to the gh bot, and into the prompt of the local Claude session that a `hard` fix runs — after which this commits whatever the session changed.
+That text is passed to whatever `fix.easy.run` names — the example script splices it into an `/edit` instruction for the gh bot — and into the prompt of the local Claude session that a `hard` fix runs, after which this commits whatever the session changed.
 A handoff's stdout is a control channel too: `ticket-pr:` registers a PR and `ticket-worktree:` sets the directory later commands run in.
 Run this against repos whose commenters you trust.
 
