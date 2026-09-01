@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 from ticket.config import load_config
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -53,6 +55,19 @@ def test_the_worktree_script_honours_the_worktree_setting():
     assert "ticket-worktree:" in text
 
 
+def test_the_example_config_declares_its_severities():
+    """The example prompts spell out a legend, so the config it ships with has
+    to declare the same one rather than lean on the built-in default."""
+    cfg = load_config(EXAMPLES / "config.yml")
+    raw = yaml.safe_load((EXAMPLES / "config.yml").read_text())
+    assert "severities" in raw
+    assert [s.id for s in cfg.severities] == [
+        "blocking",
+        "maintenance",
+        "architecture",
+    ]
+
+
 def test_every_review_prompt_states_the_output_format():
     """Self-contained, every one of them.
 
@@ -65,6 +80,6 @@ def test_every_review_prompt_states_the_output_format():
         text = cfg.path_to(review.prompt).read_text()
         assert "**Verdict:**" in text, review.id
         assert "importance, not effort" in text, review.id
-        for severity in ("🔴", "🟡", "🔵"):
-            assert severity in text, review.id
+        for severity in cfg.severities:
+            assert severity.marker in text, (review.id, severity.id)
         assert "prompts/reviews/" not in text, review.id

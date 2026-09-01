@@ -62,16 +62,19 @@ The gh bot commits on the remote, so a stale checkout would mean trailer scannin
 It never rebases, never merges non-fast-forward, and never touches uncommitted work — it says what it could not do and carries on.
 `--no-sync` opts out.
 
-**Severity and effort are different questions.** Severity (🔴 blocking, 🟡 maintenance, 🔵 architecture) says how important a finding is.
+**Severity and effort are different questions.** Severity says how important a finding is.
+The names and their markers are yours, declared under `severities:` — 🔴 blocking, 🟡 maintenance, 🔵 architecture is what the example config ships and what you get if you leave the key out, not a set the engine believes in.
+Config order is importance order, and one entry is `default:`, the severity a Haiku-parsed finding falls back to when it names one you never declared.
 Effort (`easy`/`hard`) says how contained the fix is: `easy` goes back to the gh Claude bot as an `/edit` comment, `hard` gets a local Claude session.
 A blocking finding can be a one-line fix.
 Effort is set by Haiku at ingestion and overridden with `ticket effort`; it is never derived from severity.
 The local session a `hard` fix runs is configured under `fix:` — `model:` (defaults to `defaults.model`) and `args:`, which is where agent mode goes.
 Without it the session can read but not write, and every hard fix ends in "changed nothing".
 
-**The review format is the tool's contract.** A review this tool dispatches is expected to answer in one `<details>` block per severity — keyed by 🔴, 🟡 or 🔵 in the `<summary>` — with each finding a top-level `*` bullet naming its file in backticks, `None.` in an empty block, and a closing `**Verdict:**` line.
+**The review format is the tool's contract.** A review this tool dispatches is expected to answer in one `<details>` block per severity — keyed by that severity's configured marker in the `<summary>` — with each finding a top-level `*` bullet naming its file in backticks, `None.` in an empty block, and a closing `**Verdict:**` line.
 That shape parses to findings for free.
 Anything else — a human comment, a bot whose output you do not control, format drift — is split into findings by Haiku instead, so nothing is lost by a reviewer that will not conform.
+Change `severities:` and both paths follow: the script parser looks for the new markers, and the Haiku prompt asks for the new names.
 The example review prompts under `examples/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.

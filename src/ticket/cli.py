@@ -477,12 +477,11 @@ def cmd_findings(args) -> int:
         print(json.dumps(doc["findings"], indent=2))
         return 0
     order = {"open": 0, "wontfix": 1, "resolved": 2}
-    severity_order = {"blocking": 0, "maintenance": 1, "architecture": 2}
     for finding in sorted(
         doc["findings"],
         key=lambda f: (
             order.get(f.get("status"), 9),
-            severity_order.get(f.get("severity"), 9),
+            ctx.cfg.severity_rank(f.get("severity")),
             f["id"],
         ),
     ):

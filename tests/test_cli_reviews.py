@@ -529,3 +529,41 @@ def test_refresh_survives_a_tracker_binary_that_is_not_installed(
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "deadbee"}))
     assert main(["refresh", "ABC-123"]) == 0
     assert store.read_pr("acme/api#115")["head"] == "deadbee"
+
+
+SEVERITY_CONFIG = CONFIG.replace(
+    "tracker:",
+    textwrap.dedent("""\
+    severities:
+      - id: must-fix
+        marker: "[!]"
+      - id: consider
+        marker: "[?]"
+        default: true
+    tracker:"""),
+)
+
+
+@pytest.fixture
+def severity_env(env, monkeypatch):
+    (env / "config.yml").write_text(SEVERITY_CONFIG)
+    return env
+
+
+def test_findings_are_listed_in_configured_severity_order(
+    severity_env, fake_bin, capsys
+):
+    """Config order is the order, so a custom vocabulary sorts by its own
+    importance rather than falling to the end as unknown."""
+    started(fake_bin)
+    _seed_findings(
+        severity_env,
+        {"summary": "lower", "severity": "consider"},
+        {"summary": "higher", "severity": "must-fix"},
+    )
+    capsys.readouterr()
+
+    assert main(["findings", "ABC-123"]) == 0
+
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert [ln.split()[2] for ln in lines] == ["must-fix", "consider"]

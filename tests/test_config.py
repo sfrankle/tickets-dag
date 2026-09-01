@@ -313,3 +313,95 @@ def test_tracker_must_be_a_mapping(tmp_path):
     text = SAMPLE + "\ntracker: jira\n"
     with pytest.raises(ConfigError, match="tracker:"):
         load_config(write(tmp_path, text))
+
+
+SEVERITIES = textwrap.dedent("""
+    models:
+      opus: claude-opus-5
+
+    defaults:
+      model: opus
+
+    severities:
+      - id: nit
+        marker: "N"
+      - id: must-fix
+        marker: "M"
+        default: true
+
+    steps:
+      - id: evaluate
+        model: opus
+        prompt: prompts/evaluate.md
+""")
+
+
+def test_severities_default_to_the_built_in_three(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert [s.id for s in cfg.severities] == [
+        "blocking",
+        "maintenance",
+        "architecture",
+    ]
+    assert [s.marker for s in cfg.severities] == ["🔴", "🟡", "🔵"]
+    assert cfg.default_severity == "maintenance"
+
+
+def test_configured_severities_replace_the_default_set(tmp_path):
+    cfg = load_config(write(tmp_path, SEVERITIES))
+    assert [s.id for s in cfg.severities] == ["nit", "must-fix"]
+    assert cfg.default_severity == "must-fix"
+
+
+def test_severity_for_marker_finds_the_id_in_a_summary(tmp_path):
+    cfg = load_config(write(tmp_path, SEVERITIES))
+    assert cfg.severity_for_marker("M Must fix these") == "must-fix"
+    assert cfg.severity_for_marker("nothing here") is None
+
+
+def test_severity_rank_follows_config_order(tmp_path):
+    cfg = load_config(write(tmp_path, SEVERITIES))
+    assert cfg.severity_rank("nit") < cfg.severity_rank("must-fix")
+    assert cfg.severity_rank("unknown") > cfg.severity_rank("must-fix")
+
+
+def test_duplicate_severity_id_is_an_error(tmp_path):
+    text = SEVERITIES.replace("- id: must-fix", "- id: nit")
+    with pytest.raises(ConfigError, match="duplicate severity id: nit"):
+        load_config(write(tmp_path, text))
+
+
+def test_duplicate_severity_marker_is_an_error(tmp_path):
+    text = SEVERITIES.replace('marker: "M"', 'marker: "N"')
+    with pytest.raises(ConfigError, match="duplicate severity marker"):
+        load_config(write(tmp_path, text))
+
+
+def test_severities_need_exactly_one_default(tmp_path):
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_config(write(tmp_path, SEVERITIES.replace("    default: true\n", "")))
+
+
+def test_two_default_severities_is_an_error(tmp_path):
+    text = SEVERITIES.replace(
+        '    marker: "N"\n', '    marker: "N"\n    default: true\n'
+    )
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_config(write(tmp_path, text))
+
+
+def test_empty_severities_list_is_an_error(tmp_path):
+    text = SEVERITIES[: SEVERITIES.index("severities:")] + "severities: []\n"
+    with pytest.raises(ConfigError, match="severities"):
+        load_config(write(tmp_path, text))
+
+
+def test_severity_without_an_id_is_an_error(tmp_path):
+    with pytest.raises(ConfigError, match="every severity needs an id"):
+        load_config(write(tmp_path, SEVERITIES.replace("- id: nit", "- marker2: nit")))
+
+
+def test_marker_is_optional(tmp_path):
+    cfg = load_config(write(tmp_path, SEVERITIES.replace('    marker: "N"\n', "")))
+    assert cfg.severities[0].marker is None
+    assert cfg.severity_for_marker("N") is None

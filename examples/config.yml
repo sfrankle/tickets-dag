@@ -28,6 +28,22 @@ sync: true
 # name, because that is what a key becomes.
 # key_pattern: "^[A-Z][A-Z0-9]*-[0-9]+$"
 
+# The vocabulary a finding's severity is drawn from. Order is importance —
+# `ticket findings` lists in this order — and `marker:` is what the script
+# parser looks for in a review's `<summary>`. Exactly one entry is `default:`,
+# the severity a Haiku-parsed finding falls back to when it names something
+# this list has never heard of. Omit the whole key and these three are what
+# you get; the review prompts below spell out the same legend, so a config
+# that changes it changes them too.
+severities:
+  - id: blocking
+    marker: "🔴"
+  - id: maintenance
+    marker: "🟡"
+    default: true
+  - id: architecture
+    marker: "🔵"
+
 # A checkout per ticket, or work in the clone itself on a branch.
 worktrees:
   enabled: true

@@ -1,7 +1,8 @@
 """Review body -> findings. Script path plus Haiku fallback.
 
 The AI reviews we trigger emit a known format: one `<details>` block per
-severity keyed by the emoji in `<summary>`, top-level `*` bullets as findings,
+severity keyed by its configured marker in `<summary>`, top-level `*` bullets
+as findings,
 and a `**Verdict:**` line at the end. A script handles that. Anything else — a
 human comment, another bot, format drift — goes to Haiku. Cost is therefore
 zero on the common path and small on the uncommon one.
@@ -19,7 +20,6 @@ import subprocess
 from .config import Config
 from .errors import TicketError
 
-SEVERITIES = {"🔴": "blocking", "🟡": "maintenance", "🔵": "architecture"}
 FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
@@ -32,8 +32,6 @@ def loads_loose(raw: str):
     match = FENCE_RE.match(raw.strip())
     return json.loads(match.group(1) if match else raw.strip())
 
-
-DEFAULT_SEVERITY = "maintenance"
 
 DETAILS_RE = re.compile(
     r"<details>\s*<summary>(?P<summary>.*?)</summary>(?P<body>.*?)</details>",
@@ -50,7 +48,7 @@ FILE_RE = re.compile(r"`([^`\s]+\.[A-Za-z0-9]+)`")
 HAIKU_PROMPT = """Split the following code review into individual findings.
 
 Return ONLY a JSON array. Each element must be an object with these keys:
-  "severity": one of "blocking", "maintenance", "architecture"
+  "severity": one of {severities}
   "summary":  one short line naming the problem
   "body":     the full text of the finding
   "file":     the file path the finding is about, or null
@@ -59,6 +57,12 @@ Do not add commentary. Do not wrap the JSON in a code fence.
 
 REVIEW:
 """
+
+
+def haiku_prompt(cfg: Config) -> str:
+    """The parse prompt, naming this config's severities rather than a fixed set."""
+    names = ", ".join(f'"{name}"' for name in cfg.severity_ids())
+    return HAIKU_PROMPT.format(severities=names)
 
 
 def _bullets(block: str) -> list[str]:
@@ -87,21 +91,17 @@ def _file_of(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def parse_script(body: str) -> list[dict] | None:
-    blocks = list(DETAILS_RE.finditer(body))
+def parse_script(cfg: Config, body: str) -> list[dict] | None:
     recognised = [
-        m for m in blocks if any(emoji in m.group("summary") for emoji in SEVERITIES)
+        (match, severity)
+        for match in DETAILS_RE.finditer(body)
+        if (severity := cfg.severity_for_marker(match.group("summary"))) is not None
     ]
     if not recognised or not VERDICT_RE.search(body):
         return None
 
     findings: list[dict] = []
-    for match in recognised:
-        severity = next(
-            name
-            for emoji, name in SEVERITIES.items()
-            if emoji in match.group("summary")
-        )
+    for match, severity in recognised:
         for bullet in _bullets(match.group("body")):
             findings.append(
                 {
@@ -119,7 +119,7 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
     model = cfg.model_id("haiku")
     completed = subprocess.run(
         ["claude", "-p", "--model", model],
-        input=HAIKU_PROMPT + body,  # stdin, not argv — decision #21
+        input=haiku_prompt(cfg) + body,  # stdin, not argv — decision #21
         capture_output=True,
         text=True,
         check=False,
@@ -133,14 +133,13 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
     if not isinstance(raw, list):
         raise TicketError("haiku did not return JSON: expected an array")
 
+    known = set(cfg.severity_ids())
     findings = []
     for item in raw:
         severity = item.get("severity")
         findings.append(
             {
-                "severity": severity
-                if severity in SEVERITIES.values()
-                else DEFAULT_SEVERITY,
+                "severity": severity if severity in known else cfg.default_severity,
                 "summary": (item.get("summary") or "").strip(),
                 "body": item.get("body") or item.get("summary") or "",
                 "file": item.get("file") or None,
@@ -151,7 +150,7 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
 
 
 def parse(cfg: Config, body: str) -> list[dict]:
-    findings = parse_script(body)
+    findings = parse_script(cfg, body)
     if findings is not None:
         return findings
     return parse_haiku(cfg, body)

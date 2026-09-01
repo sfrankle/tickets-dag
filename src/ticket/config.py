@@ -19,6 +19,15 @@ from .errors import ConfigError
 DEFAULT_CONFIG = Path("~/.ticket/config.yml")
 DEFAULT_WORKTREE_ROOT = Path("~/worktrees")
 
+# The house style this tool grew up with, kept as the default so a config
+# that says nothing keeps working. It is an example, not the engine's
+# opinion: `severities:` replaces it wholesale.
+DEFAULT_SEVERITIES = (
+    {"id": "blocking", "marker": "\U0001f534"},
+    {"id": "maintenance", "marker": "\U0001f7e1", "default": True},
+    {"id": "architecture", "marker": "\U0001f535"},
+)
+
 
 def _anchor(raw: str, root: Path) -> Path:
     """Resolve a path out of the config: `~` expands, relative anchors to `root`.
@@ -29,6 +38,21 @@ def _anchor(raw: str, root: Path) -> Path:
     """
     candidate = Path(raw).expanduser()
     return candidate if candidate.is_absolute() else root / candidate
+
+
+@dataclass(frozen=True)
+class Severity:
+    """One name a finding can carry, and the marker a review writes it as.
+
+    `marker` is what the script parser looks for in a review's section
+    heading; a severity without one is still reachable from a model-parsed
+    review, just not from the script path. Config order is the order
+    findings are listed in, so the most important severity goes first.
+    """
+
+    id: str
+    marker: str | None = None
+    default: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,6 +138,7 @@ class Config:
     repos: dict[str, dict]
     worktrees: Worktrees
     sync: bool
+    severities: tuple[Severity, ...]
     fix: Fix = Fix()
     tracker: Tracker = Tracker()
     key_pattern: str | None = None
@@ -125,6 +150,27 @@ class Config:
             raise ConfigError(
                 f"unknown model alias: {alias}. Known: {', '.join(sorted(self.models))}"
             ) from None
+
+    @property
+    def default_severity(self) -> str:
+        return next(s.id for s in self.severities if s.default)
+
+    def severity_ids(self) -> list[str]:
+        return [s.id for s in self.severities]
+
+    def severity_for_marker(self, text: str) -> str | None:
+        """The severity whose marker appears in `text`, if any."""
+        for severity in self.severities:
+            if severity.marker and severity.marker in text:
+                return severity.id
+        return None
+
+    def severity_rank(self, severity_id: str | None) -> int:
+        """Sort key. Config order is the order; anything unknown sorts last."""
+        for index, severity in enumerate(self.severities):
+            if severity.id == severity_id:
+                return index
+        return len(self.severities)
 
     def step(self, step_id: str) -> Step:
         for step in self.steps:
@@ -326,6 +372,53 @@ def _load_key_pattern(raw) -> str | None:
     return raw
 
 
+def _load_severities(raw) -> tuple[Severity, ...]:
+    """The severity vocabulary. Omitted means `DEFAULT_SEVERITIES`.
+
+    Order is meaningful and markers must be distinct, because both the script
+    parser and `ticket findings` key off them. Exactly one severity carries
+    `default: true`: it is what a model-parsed finding falls back to when it
+    names a severity this config has never heard of.
+    """
+    if raw is None:
+        raw = list(DEFAULT_SEVERITIES)
+    if not isinstance(raw, list) or not raw:
+        raise ConfigError("severities: must be a non-empty list")
+    severities: list[Severity] = []
+    seen: set[str] = set()
+    markers: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ConfigError("every severity must be a mapping with an id:")
+        severity_id = item.get("id")
+        if not severity_id:
+            raise ConfigError("every severity needs an id")
+        if severity_id in seen:
+            raise ConfigError(f"duplicate severity id: {severity_id}")
+        seen.add(severity_id)
+        marker = item.get("marker")
+        if marker is not None:
+            marker = str(marker)
+            if marker in markers:
+                raise ConfigError(f"duplicate severity marker: {marker}")
+            markers.add(marker)
+        severities.append(
+            Severity(
+                id=str(severity_id),
+                marker=marker,
+                default=bool(item.get("default", False)),
+            )
+        )
+    defaults = [s.id for s in severities if s.default]
+    if len(defaults) != 1:
+        raise ConfigError(
+            "severities: needs exactly one entry with default: true "
+            f"(found {len(defaults)}). It is the severity a model-parsed "
+            "finding falls back to."
+        )
+    return tuple(severities)
+
+
 def _load_tracker(raw) -> Tracker:
     if not raw:
         return Tracker()
@@ -385,6 +478,7 @@ def load_config(path: Path | None = None) -> Config:
             branch=wt.get("branch") or "{key}",
         ),
         sync=bool(raw.get("sync", True)),
+        severities=_load_severities(raw.get("severities")),
         fix=_load_fix(raw.get("fix") or {}, default_model, models),
         tracker=_load_tracker(raw.get("tracker")),
         key_pattern=_load_key_pattern(raw.get("key_pattern")),

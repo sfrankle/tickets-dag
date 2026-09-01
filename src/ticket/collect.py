@@ -88,7 +88,7 @@ def collect(
         # The reviews we dispatch emit our known format. A body the script
         # parser recognises is therefore one of ours; anything that falls back
         # to Haiku is not, and is recorded with review: null.
-        script_findings = parse_script(source["body"])
+        script_findings = parse_script(cfg, source["body"])
         review_id = next_uncollected(pr) if script_findings is not None else None
 
         if dry_run:
