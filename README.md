@@ -113,7 +113,8 @@ For a bot that writes something genuinely different, an optional `parse.sources`
 A profile is validated at load under the same flags it runs under, and `examples/config.yml` states which those are; `file:` is the one pattern taken at its word, recording its capture with none of the path checks the built-in applies.
 The example review prompts under `examples/input/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
 
-**`collect` does not wait, and a source can be read again.** It reads what is on the PR at the moment it runs and returns; a dispatched review that has not posted yet is named in the output as still outstanding, and you run `collect` again once it lands.
+**`collect` does not wait, and a source can be read again.**
+It reads what is on the PR at the moment it runs and returns; a dispatched review that has not posted yet is named in the output as still outstanding, and you run `collect` again once it lands.
 A collected source is normally skipped on the next run, with two exceptions.
 A source that produced no findings is re-parsed every time, for free — the re-parse stops at the script parser and never falls back to Haiku — so a parser that has since learned to read that body recovers findings that were previously stranded behind their own source id.
 `ticket collect KEY --recollect <source-id>` (repeatable) forces a full re-read of a named source, Haiku included, which is the case a source that already produced findings needs.

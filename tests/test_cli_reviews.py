@@ -589,8 +589,8 @@ def one_review(fake_bin, body_file="example-review.md", author="claude"):
 def test_collect_does_not_call_a_source_foreign_when_nothing_was_dispatched(
     env, fake_bin, capsys
 ):
-    """`(not one of ours)` only means something once something of ours is out
-    there. With an empty `dispatched` it was on every line and said nothing."""
+    """`(not one of ours)` only means something once something of ours is out there.
+    With an empty `dispatched` it was on every line and said nothing."""
     started(fake_bin)
     one_review(fake_bin, author="review-bot")
     capsys.readouterr()

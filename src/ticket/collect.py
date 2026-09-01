@@ -7,20 +7,14 @@ tracked fully; they are simply not in the config.
 
 A source id in `collected` is normally skipped, with two exceptions (issue #10):
 
-  * a record that produced no findings is re-parsed on every run, so a parser
-    that has since learned to read that body recovers its findings instead of
-    the source being unreachable forever. This costs nothing: the re-parse
-    stops at the script parser and never falls back to Haiku.
-  * `recollect=[source_id]` forces a full re-read of a named source, Haiku
-    included — the case a record that already has findings needs.
+  * a record that produced no findings is re-parsed on every run, so a parser that has since learned to read that body recovers its findings instead of the source being unreachable forever.
+    This costs nothing: the re-parse stops at the script parser and never falls back to Haiku.
+  * `recollect=[source_id]` forces a full re-read of a named source, Haiku included — the case a record that already has findings needs.
 
-Neither can duplicate a finding: everything parsed goes through
-`_drop_duplicates` against the findings already open on the PR, and a re-read
-updates the existing collection record rather than adding a second one.
+Neither can duplicate a finding: everything parsed goes through `_drop_duplicates` against the findings already open on the PR, and a re-read updates the existing collection record rather than adding a second one.
 
-Collection never waits. It reads what is on the PR at the moment it runs and
-returns; a review that has not posted yet is simply still outstanding, which
-`outstanding()` reports so the caller can say so.
+Collection never waits.
+It reads what is on the PR at the moment it runs and returns; a review that has not posted yet is simply still outstanding, which `outstanding()` reports so the caller can say so.
 """
 
 from __future__ import annotations
@@ -112,8 +106,8 @@ def collect(
     for source in sources:
         prior = seen.get(source["id"])
         forced_here = source["id"] in forced
-        # A record that already produced findings is done with, unless the
-        # caller named it. One that produced none is looked at again below.
+        # A record that already produced findings is done with, unless the caller named it.
+        # One that produced none is looked at again below.
         if prior is not None and prior.get("findings") and not forced_here:
             continue
         if not source["body"].strip():
@@ -127,15 +121,11 @@ def collect(
         script_findings = parse_script(cfg, source["body"], author=source["author"])
 
         if prior is not None and not forced_here and not script_findings:
-            # An automatic re-read is a free re-run of the script parser. The
-            # body is still unreadable (or genuinely empty, an all-clear
-            # review), so there is nothing to recover and no reason to buy a
-            # Haiku call for it on this run and every run after it.
+            # An automatic re-read is a free re-run of the script parser.
+            # The body is still unreadable (or genuinely empty, an all-clear review), so there is nothing to recover and no reason to buy a Haiku call for it on this run and every run after it.
             continue
 
-        # A re-read keeps the review its record already claimed: the record
-        # occupies that review's collected slot, so asking `next_uncollected`
-        # again would hand out a second one.
+        # A re-read keeps the review its record already claimed: the record occupies that review's collected slot, so asking `next_uncollected` again would hand out a second one.
         review_id = (prior or {}).get("review")
         if review_id is None and script_findings is not None:
             review_id = next_uncollected(pr)
@@ -174,14 +164,12 @@ def collect(
         minted = store.add_findings(pr_ref, findings, ticket["key"])
 
         if prior is not None:
-            # One record per source, always: a re-read updates the record it
-            # already has, so the source id keeps a single history.
+            # One record per source, always: a re-read updates the record it already has, so the source id keeps a single history.
             prior["review"] = review_id
             prior["reread_at"] = now()
             prior["findings"] = list(prior.get("findings") or []) + minted
             store.write_pr(pr)
-            # What the caller is told about is this run's work, so `findings`
-            # here is what was newly minted, not the record's whole list.
+            # What the caller is told about is this run's work, so `findings` here is what was newly minted, not the record's whole list.
             added.append(dict(prior, findings=minted, reread=True))
             continue
 

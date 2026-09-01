@@ -328,9 +328,8 @@ def collected_pr(store, source_id="PRR_1", findings=None, review=None, author="c
 
 
 def test_a_source_recorded_with_zero_findings_is_re_parsed(cfg, store, fake_bin):
-    """The #9 grammar bug recorded readable reviews as 0 findings. Once the
-    parser can read the body, a re-run must pick those findings up rather
-    than skipping the source id forever."""
+    """The #9 grammar bug recorded readable reviews as 0 findings.
+    Once the parser can read the body, a re-run must pick those findings up rather than skipping the source id forever."""
     collected_pr(store, review="docs-tests")
     body = (FIXTURES / "example-review.md").read_text()
     fake_bin.respond(
@@ -345,8 +344,7 @@ def test_a_source_recorded_with_zero_findings_is_re_parsed(cfg, store, fake_bin)
 
 
 def test_a_re_read_source_does_not_claim_a_second_review(cfg, store, fake_bin):
-    """The record already occupies its review's collected slot; re-reading it
-    must not consume another one."""
+    """The record already occupies its review's collected slot; re-reading it must not consume another one."""
     collected_pr(store, review="docs-tests")
     body = (FIXTURES / "example-review.md").read_text()
     fake_bin.respond(
@@ -361,9 +359,8 @@ def test_a_re_read_source_does_not_claim_a_second_review(cfg, store, fake_bin):
 def test_an_empty_source_the_parser_still_cannot_read_spends_no_tokens(
     cfg, store, fake_bin
 ):
-    """Automatic re-reading is free: it re-runs the script parser only. A body
-    that is still unreadable is left alone rather than paying for a Haiku call
-    on every run."""
+    """Automatic re-reading is free: it re-runs the script parser only.
+    A body that is still unreadable is left alone rather than paying for a Haiku call on every run."""
     collected_pr(store, author="someone")
     fake_bin.respond(
         "gh api repos/acme/api/pulls/115/reviews",
@@ -374,8 +371,7 @@ def test_an_empty_source_the_parser_still_cannot_read_spends_no_tokens(
 
 
 def test_recollect_re_reads_a_source_that_already_had_findings(cfg, store, fake_bin):
-    """--recollect is the case automatic re-reading does not cover: a source
-    that produced findings and still needs reading again."""
+    """--recollect is the case automatic re-reading does not cover: a source that produced findings and still needs reading again."""
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
     fake_bin.respond(
@@ -388,8 +384,7 @@ def test_recollect_re_reads_a_source_that_already_had_findings(cfg, store, fake_
 
 
 def test_recollecting_does_not_duplicate_findings_already_minted(cfg, store, fake_bin):
-    """Dedupe is on the finding fingerprint, so a re-read of a source whose
-    findings are still open mints nothing new."""
+    """Dedupe is on the finding fingerprint, so a re-read of a source whose findings are still open mints nothing new."""
     seeded_pr(store)
     body = (FIXTURES / "example-review.md").read_text()
     fake_bin.respond(
@@ -416,8 +411,7 @@ def test_recollect_of_a_source_that_is_not_on_the_pr_says_so(
 
 
 def test_collect_does_not_wait_for_an_outstanding_review(cfg, store, fake_bin):
-    """`outstanding` is what the CLI says out loud: collect reads what is on
-    the PR now and returns, it never polls."""
+    """`outstanding` is what the CLI says out loud: collect reads what is on the PR now and returns, it never polls."""
     seeded_pr(store)
     fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
     assert collect(cfg, store, ticket_doc(), "acme/api#115") == []

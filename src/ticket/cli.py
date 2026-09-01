@@ -402,8 +402,8 @@ def cmd_collect(args) -> int:
         recollect=args.recollect,
     )
     pr = inner.store.read_pr(pr_ref) or {}
-    # `(not one of ours)` only carries information when some of the sources
-    # could have been ours. With nothing dispatched it was on every line.
+    # `(not one of ours)` only carries information when some of the sources could have been ours.
+    # With nothing dispatched it was on every line.
     ours_are_out = bool(pr.get("dispatched"))
     if not added:
         print("nothing new")
