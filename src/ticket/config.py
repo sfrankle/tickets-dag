@@ -22,8 +22,8 @@ DEFAULT_WORKTREE_ROOT = Path("~/worktrees")
 # The house style this tool grew up with, kept as the default so a config
 # that says nothing keeps working. It is an example, not the engine's
 # opinion: `severities:` replaces it wholesale.
-# Every key each block understands. A key outside its set is a typo, and a
-# typo under a known block used to load clean and do nothing (issues #6, #8).
+# Every key each block understands.
+# A key outside its set is a typo, and a typo under a known block used to load clean and do nothing (issues #6, #8).
 TOP_LEVEL_KEYS = {
     "store",
     "models",
@@ -70,9 +70,8 @@ def _anchor(raw: str, root: Path) -> Path:
 def _reject_unknown(where: str, raw: dict, allowed: set[str]) -> None:
     """Fail on a key this loader does not know (issues #6, #8).
 
-    A dropped key is worse than a rejected one: `tracker: {sumary: ...}` looks
-    configured, loads clean, and does nothing. Every block validates its own
-    keys, so the message names the block and what it could have meant.
+    A dropped key is worse than a rejected one: `tracker: {sumary: ...}` looks configured, loads clean, and does nothing.
+    Every block validates its own keys, so the message names the block and what it could have meant.
     """
     # str() first: YAML 1.1 reads a bare `no:` as the boolean False, and a
     # mixed str/bool key list is unsortable — a traceback out of the one verb

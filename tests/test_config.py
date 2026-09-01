@@ -455,9 +455,8 @@ def test_a_parse_source_that_overrides_nothing_is_an_error(tmp_path):
 
 # --- unknown keys ---------------------------------------------------------
 #
-# Issues #6 and #8: a typo under a known block used to be dropped in silence,
-# so `tracker: {sumary: ...}` looked configured and did nothing. A key this
-# loader does not know is a mistake, and mistakes are loud.
+# Issues #6 and #8: a typo under a known block used to be dropped in silence, so `tracker: {sumary: ...}` looked configured and did nothing.
+# A key this loader does not know is a mistake, and mistakes are loud.
 
 
 def test_an_unknown_top_level_key_is_an_error(tmp_path):

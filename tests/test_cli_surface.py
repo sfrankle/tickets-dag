@@ -1,13 +1,9 @@
-"""The CLI surface itself: which verbs the engine owns, which names come from
-config, and the one model of "a step exists" that every verb has to share.
+"""The CLI surface itself: which verbs the engine owns, which names come from config, and the one model of "a step exists" that every verb has to share.
 
-Issue #12. The bug the owner reported reads as a registration model —
-`ticket show KEY-1` lists `evaluate` and calls it `next`, then `ticket skip
-KEY-1 evaluate` answers "evaluate is not tracked" — but there was never a
-registration step to be missing. `run`, `skip` and `release` took their
-positionals as `<step> <key>` while every other verb took `<key>` first, so
-that command looked up a ticket named `evaluate`. The model is: config
-declares a stage, the store only records what has happened to it.
+Issue #12.
+The bug the owner reported reads as a registration model — `ticket show KEY-1` lists `evaluate` and calls it `next`, then `ticket skip KEY-1 evaluate` answers "evaluate is not tracked" — but there was never a registration step to be missing.
+`run`, `skip` and `release` took their positionals as `<step> <key>` while every other verb took `<key>` first, so that command looked up a ticket named `evaluate`.
+The model is: config declares a stage, the store only records what has happened to it.
 """
 
 import json
@@ -79,8 +75,10 @@ def test_the_reported_contradiction_is_gone(tracked, capsys):
 
 
 def test_a_declared_step_needs_no_per_key_registration(tracked, capsys):
-    """Nothing has ever written a record for `draft-pr` on this ticket. It is
-    in config, so every verb takes it anyway."""
+    """Nothing has ever written a record for `draft-pr` on this ticket.
+
+    It is in config, so every verb takes it anyway.
+    """
     for argv in (
         ["skip", "ABC-123", "draft-pr", "--dry-run"],
         ["run", "ABC-123", "draft-pr", "--dry-run"],
@@ -127,9 +125,10 @@ def test_key_first_is_the_order_for_every_verb_that_takes_a_step(tracked, capsys
 
 
 def test_the_old_step_first_order_still_works_and_says_it_moved(tracked, capsys):
-    """Muscle memory, and every README written before this change. The swap is
-    only taken when the first word is not a tracked key and the second is, so
-    it can never silently pick the wrong ticket."""
+    """Muscle memory, and every README written before this change.
+
+    The swap is only taken when the first word is not a tracked key and the second is, so it can never silently pick the wrong ticket.
+    """
     assert main(["skip", "evaluate", "ABC-123"]) == 0
     out, err = capsys.readouterr()
     assert "skipped step evaluate" in out
@@ -137,9 +136,10 @@ def test_the_old_step_first_order_still_works_and_says_it_moved(tracked, capsys)
 
 
 def test_decide_and_findings_keep_the_key_first(tracked, capsys):
-    """They already did; pinned so the whole surface stays one shape. Both
-    stop on the missing PR, which is only reachable once the key parsed as a
-    key: the wrong order would have said "f01 is not tracked"."""
+    """They already did; pinned so the whole surface stays one shape.
+
+    Both stop on the missing PR, which is only reachable once the key parsed as a key: the wrong order would have said "f01 is not tracked".
+    """
     assert main(["findings", "ABC-123"]) == 1
     assert main(["decide", "ABC-123", "f01", "covered elsewhere"]) == 1
     err = capsys.readouterr().err
@@ -182,8 +182,7 @@ def test_help_separates_engine_verbs_from_stage_verbs(env, capsys):
     out = capsys.readouterr().out
     assert "management commands" in out
     assert "stage commands" in out
-    # Management verbs are the ones argparse lists; the stage verbs are held
-    # back into their own block, below.
+    # Management verbs are the ones argparse lists; the stage verbs are held back into their own block, below.
     head, _, tail = out.partition("stage commands")
     assert "track" in head and "refresh" in head and "show" in head
     assert "run" in tail and "skip" in tail and "collect" in tail

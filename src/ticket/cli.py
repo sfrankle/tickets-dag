@@ -3,17 +3,12 @@
 Fixed verbs. The verb set does not grow when the config does: adding a step to
 YAML changes what `next` does and what `run` accepts, and adds nothing here.
 
-Two families of verb, and `--help` says which is which (issue #12). Management
-verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config`
-— are the engine's own and mean the same thing under every config. Stage verbs
-— `run`, `skip`, `release`, `review`, `collect`, `fix`, ... — are also the
-engine's, but every name they take as an argument comes from config, and
-`ticket stages --list` is where those names are read.
+Two families of verb, and `--help` says which is which (issue #12).
+Management verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config` — are the engine's own and mean the same thing under every config.
+Stage verbs — `run`, `skip`, `release`, `review`, `collect`, `fix`, ... — are also the engine's, but every name they take as an argument comes from config, and `ticket stages --list` is where those names are read.
 
-A stage exists because config declares it, not because the store has a row for
-it: the store only records what has happened to a stage. There is no per-key
-registration, and every verb here resolves a stage name against `cfg.steps`
-and `cfg.reviews` alone.
+A stage exists because config declares it, not because the store has a row for it: the store only records what has happened to a stage.
+There is no per-key registration, and every verb here resolves a stage name against `cfg.steps` and `cfg.reviews` alone.
 """
 
 from __future__ import annotations
@@ -659,11 +654,12 @@ def cmd_reset(args) -> int:
 
 
 def cmd_stages(args) -> int:
-    """The names config declares. They are not verbs and never were.
+    """The names config declares.
 
-    `ticket --help` is the engine's surface and stays fixed; this is the
-    config's, and it changes when the YAML does. `--list` is accepted because
-    the issue asks for it by name, and is also what happens with no flag.
+    They are not verbs and never were.
+
+    `ticket --help` is the engine's surface and stays fixed; this is the config's, and it changes when the YAML does.
+    `--list` is accepted because the issue asks for it by name, and is also what happens with no flag.
     """
     ctx = Context.load(repo=getattr(args, "repo", None), no_sync=True)
     cfg = ctx.cfg
@@ -711,11 +707,8 @@ def cmd_stages(args) -> int:
 def config_problems(cfg: Config) -> list[str]:
     """Everything wrong with a config that still loaded.
 
-    Load-time checks — cycles, unknown keys, an unknown model alias — raise
-    before this is reached; `cmd_config` catches those and reports them the
-    same way. What is left is the filesystem: a step or review that points at
-    a prompt or script which is not there, is not readable, or (for a `run:`)
-    is not executable, and a `repos.<repo>.path` that is not a checkout.
+    Load-time checks — cycles, unknown keys, an unknown model alias — raise before this is reached; `cmd_config` catches those and reports them the same way.
+    What is left is the filesystem: a step or review that points at a prompt or script which is not there, is not readable, or (for a `run:`) is not executable, and a `repos.<repo>.path` that is not a checkout.
     """
     problems: list[str] = []
 
@@ -751,15 +744,12 @@ def config_problems(cfg: Config) -> list[str]:
 def cmd_config(args) -> int:
     """Show the resolved config and say whether it works.
 
-    One command for both because they answer the same question: a config you
-    cannot see is one you cannot check. Anything that stops it loading at all
-    is reported here rather than raised, so `--validate` is the one place that
-    always tells you what is wrong.
+    One command for both because they answer the same question: a config you cannot see is one you cannot check.
+    Anything that stops it loading at all is reported here rather than raised, so `--validate` is the one place that always tells you what is wrong.
     """
     path = config_path()
     try:
-        # load_config, not Context.load: this reports what the file says, and
-        # `--no-sync` is a flag about this run, not a setting to echo back.
+        # load_config, not Context.load: this reports what the file says, and `--no-sync` is a flag about this run, not a setting to echo back.
         cfg = load_config()
         if getattr(args, "repo", None):
             cfg = cfg.for_repo(args.repo)
@@ -845,9 +835,9 @@ def cmd_log(args) -> int:
 
 VERBS: set[str] = set()
 
-# Which family a verb belongs to (issue #12). Management verbs mean the same
-# thing under every config; stage verbs take a name that only config can
-# supply. The split is what `--help` renders, and the only thing it changes.
+# Which family a verb belongs to (issue #12).
+# Management verbs mean the same thing under every config; stage verbs take a name that only config can supply.
+# The split is what `--help` renders, and the only thing it changes.
 STAGE_VERBS = (
     "run",
     "skip",
@@ -861,17 +851,15 @@ STAGE_VERBS = (
     "reviews",
 )
 
-# Verbs whose two positionals are a key and a stage. The key comes first, as
-# it does everywhere else; `_unswap` forgives the order this used to take.
+# Verbs whose two positionals are a key and a stage.
+# The key comes first, as it does everywhere else; `_unswap` forgives the order this used to take.
 STEP_AND_KEY_VERBS = {"run", "skip", "release", "reset", "log"}
 
 
 def _stage_help(entries: list[tuple[str, str]]) -> str:
     """The block `--help` prints below argparse's own list.
 
-    Held out of the subparser list on purpose: these are engine verbs, but
-    every argument they take is a config name, and mixing the two families in
-    one alphabetical list is what made the surface feel heavy.
+    Held out of the subparser list on purpose: these are engine verbs, but every argument they take is a config name, and mixing the two families in one alphabetical list is what made the surface feel heavy.
     """
     width = max((len(name) for name, _ in entries), default=0)
     lines = [f"    {name:<{width}}  {text}" for name, text in entries]
@@ -904,9 +892,8 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name, func, **kwargs):
         VERBS.add(name)
         if name in STAGE_VERBS:
-            # Popped, not set to SUPPRESS: argparse renders the sentinel as
-            # literal text rather than hiding the row. No `help` at all is
-            # what keeps a verb out of the subparser list.
+            # Popped, not set to SUPPRESS: argparse renders the sentinel as literal text rather than hiding the row.
+            # No `help` at all is what keeps a verb out of the subparser list.
             stage_help.append((name, kwargs.pop("help", "")))
         p = sub.add_parser(name, **kwargs)
         p.set_defaults(func=func, dry_run=False)
@@ -1038,13 +1025,9 @@ def build_parser() -> argparse.ArgumentParser:
 def _unswap(args, store: Store) -> None:
     """Forgive `ticket skip <step> <KEY>`, the order these verbs used to take.
 
-    That order is the whole of issue #12's headline bug: `run`, `skip` and
-    `release` read `<step> <key>` while every other verb read `<key>` first,
-    so `ticket skip KEY-1 evaluate` looked up a ticket named `evaluate` and
-    answered "evaluate is not tracked" about a step `show` had just listed.
+    That order is the whole of issue #12's headline bug: `run`, `skip` and `release` read `<step> <key>` while every other verb read `<key>` first, so `ticket skip KEY-1 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `show` had just listed.
 
-    The swap is taken only when the first word names no tracked ticket and the
-    second one does, so it can never quietly pick the wrong ticket.
+    The swap is taken only when the first word names no tracked ticket and the second one does, so it can never quietly pick the wrong ticket.
     """
     key = getattr(args, "key", None)
     step = getattr(args, "step", None)
