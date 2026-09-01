@@ -39,6 +39,19 @@ def active_pr(ticket: dict) -> str | None:
     return prs[-1] if prs else None
 
 
+def orphan_steps(cfg: Config, ticket: dict) -> list[str]:
+    """Recorded step ids the config no longer defines.
+
+    A config edit that renames or collapses a step leaves its old id in the
+    ticket's state. Resolution only ever walks `cfg.steps`, so such an id has
+    no effect on what runs next — but a state file that is half this config's
+    and half a dead one should say so out loud rather than look complete. The
+    record itself is kept: it is the only trace that the work happened.
+    """
+    known = {step.id for step in cfg.steps}
+    return sorted(sid for sid in (ticket.get("steps") or {}) if sid not in known)
+
+
 def step_satisfied(ticket: dict, step_id: str) -> bool:
     status = (ticket.get("steps") or {}).get(step_id, {}).get("status")
     return status in SATISFIED
