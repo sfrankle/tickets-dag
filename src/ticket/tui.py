@@ -24,8 +24,16 @@ def _row(cfg: Config, store: Store, ticket: dict) -> dict:
     )
     active_target = action.target if action.kind in {"step", "gate", "review"} else None
 
-    dispatched = Counter(d["review"] for d in (pr or {}).get("dispatched") or [])
-    collected = Counter(c["review"] for c in (pr or {}).get("collected") or [])
+    dispatched = Counter(
+        d.get("review")
+        for d in (pr or {}).get("dispatched") or []
+        if d.get("review")
+    )
+    collected = Counter(
+        c.get("review")
+        for c in (pr or {}).get("collected") or []
+        if c.get("review")
+    )
     skipped_reviews = set((pr or {}).get("skipped") or [])
 
     stages: list[dict] = []
