@@ -774,3 +774,10 @@ def test_a_repo_override_that_is_not_a_mapping_says_so(tmp_path):
     broken = TWO_OWNERS.replace("sfrankle/api: {}", "sfrankle/api: nope")
     with pytest.raises(ConfigError, match="repos.sfrankle/api must be a mapping"):
         load_config(write(tmp_path, broken))
+
+
+def test_an_empty_alias_is_an_error(tmp_path):
+    """An empty alternation branch matches everywhere, so `[] hi` names a repo."""
+    broken = INFER.replace("aliases: [CSM]", 'aliases: [CSM, "  "]')
+    with pytest.raises(ConfigError, match="aliases"):
+        load_config(write(tmp_path, broken))

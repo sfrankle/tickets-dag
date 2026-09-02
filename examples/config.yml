@@ -180,8 +180,14 @@ repos:
 #
 # Patterns are matched against the ticket summary, in order, and everything
 # outside a placeholder is matched literally — `[` is a bracket, not a
-# character class. `{alias}` stands for any alias above and `{repo}` for any
-# repo name, so `[API] harden the token check` finds `acme/api`.
+# character class. `{alias}` and `{repo}` are two names for the same thing:
+# either one matches an alias, a bare repo name, or a full `owner/repo`, so
+# `[API]`, `[api]` and `[acme/api]` all find `acme/api`. Write whichever reads
+# better where you use it. Matching ignores case.
+#
+# Keep something around the placeholder. A pattern that is nothing but `{alias}`
+# matches inside words too, so the alias `API` would find a repo in "capital
+# work"; the brackets below are what keep a match deliberate.
 #
 # Nothing is guessed: a summary naming two repos, or none, leaves the repo
 # unset and `track` says so rather than picking one. Omit the block and
@@ -190,4 +196,3 @@ infer:
   repo:
     patterns:
       - "[{alias}]"
-      - "[{repo}]"

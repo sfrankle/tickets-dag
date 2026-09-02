@@ -29,6 +29,8 @@ CONFIG = textwrap.dedent("""
     repos:
       sfrankle/content-security-mode:
         aliases: [CSM]
+        steps:
+          skip: [evaluate]
       sfrankle/tickets-dag:
         aliases: [DAG]
 
@@ -212,3 +214,14 @@ def test_a_repo_already_recorded_does_not_ask_the_tracker(env):
     break_tracker(env)
     assert main(["track", "ABC-123"]) == 0
     assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_stages_resolves_an_alias_in_its_own_repo_flag(env, capsys):
+    """`--repo CSM` has to mean the same thing to every verb that takes it."""
+    main(["stages", "--repo", "CSM"])
+    assert "(none)" in capsys.readouterr().out
+
+
+def test_config_resolves_an_alias_in_its_own_repo_flag(env, capsys):
+    main(["config", "--repo", "CSM"])
+    assert "evaluate" not in capsys.readouterr().out

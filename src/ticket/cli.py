@@ -77,7 +77,7 @@ class Context:
     def load(cls, repo: str | None = None, no_sync: bool = False) -> Context:
         cfg = load_config()
         if repo:
-            cfg = cfg.for_repo(repo)
+            cfg = cfg.for_repo(cfg.resolve_repo(repo))
         if no_sync:
             # `--no-sync` for the rare case of working offline; syncing is on by
             # default because the bot commits on the remote.
@@ -231,26 +231,24 @@ def cmd_track(args) -> int:
     ticket.setdefault("summary", "")
     ticket.setdefault("repo", "")
 
+    why = ""
     if args.repo:
         ticket["repo"] = ctx.cfg.resolve_repo(args.repo)
-        why = ""
-    else:
-        why = ""
-        if not ticket["repo"]:
-            # The summary is what inference reads, so it has to be fetched
-            # before the guess rather than left to `refresh` (issue #8: the
-            # fact that repairs the ticket must not be gated on the ticket
-            # being repaired). A tracker that cannot answer — offline, no VPN,
-            # a key it has never heard of — costs the guess, not the row.
-            try:
-                fetch_summary(ctx, ticket)
-            except GhError as exc:
-                print(f"warning: {exc}", file=sys.stderr)
-                why = "the tracker did not answer"
-            else:
-                guess = ctx.cfg.infer_repo(ticket["summary"])
-                ticket["repo"] = guess.repo or ""
-                why = guess.why
+    elif not ticket["repo"]:
+        # The summary is what inference reads, so it has to be fetched before
+        # the guess rather than left to `refresh` (issue #8: the fact that
+        # repairs the ticket must not be gated on the ticket being repaired).
+        # A tracker that cannot answer — offline, no VPN, a key it has never
+        # heard of — costs the guess, not the row.
+        try:
+            fetch_summary(ctx, ticket)
+        except GhError as exc:
+            print(f"warning: {exc}", file=sys.stderr)
+            why = "the tracker did not answer"
+        else:
+            guess = ctx.cfg.infer_repo(ticket["summary"])
+            ticket["repo"] = guess.repo or ""
+            why = guess.why
 
     ctx.store.write_ticket(ticket)
     if ticket["repo"]:
@@ -826,7 +824,8 @@ def cmd_config(args) -> int:
         # load_config, not Context.load: this reports what the file says, and `--no-sync` is a flag about this run, not a setting to echo back.
         cfg = load_config()
         if getattr(args, "repo", None):
-            cfg = cfg.for_repo(args.repo)
+            # An alias means the same thing here as it does to `track --repo`.
+            cfg = cfg.for_repo(cfg.resolve_repo(args.repo))
     except TicketError as exc:
         if args.json:
             print(

@@ -692,13 +692,16 @@ def _load_owner(raw) -> str | None:
     return raw.strip()
 
 
-def _repo_tokens(repos: dict, owner: str | None) -> dict[str, str]:
+def _repo_tokens(repos: dict) -> dict[str, str]:
     """Every string that names a repo, lowercased, mapped to the full name.
 
     A bare repo name claimed by two owners is left out rather than resolved to
     one of them: it stops matching, which is recoverable, instead of matching
     the wrong clone, which is not. An alias claimed twice is a mistake in the
     config rather than an accident of two owners, so that one is an error.
+
+    An alias beats a bare name another repo's spelling happens to yield, because
+    the alias is a name someone wrote down and the bare name is a coincidence.
     """
     tokens: dict[str, str] = {}
     for repo, override in repos.items():
@@ -713,6 +716,10 @@ def _repo_tokens(repos: dict, owner: str | None) -> dict[str, str]:
         else:
             aliases = raw_aliases
         for alias in aliases:
+            if not alias.strip():
+                # An empty alternation branch matches between any two
+                # characters, so one blank alias makes every pattern match.
+                raise ConfigError(f"repos.{repo}.aliases has an empty alias")
             claimed = tokens.get(alias.lower())
             if claimed and claimed != repo:
                 raise ConfigError(
@@ -882,7 +889,7 @@ def load_config(path: Path | None = None) -> Config:
         owner=_load_owner(raw.get("owner")),
         inference=_load_inference(
             raw.get("infer"),
-            _repo_tokens(repos, raw.get("owner")),
+            _repo_tokens(repos),
         ),
     )
     # Validate every repo override eagerly, not just the ones a given run

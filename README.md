@@ -56,7 +56,8 @@ Two families of verb, and `ticket --help` shows which is which.
 # management
 ticket                            # the queue
 ticket ABC-123                    # one row: steps, next action, findings
-ticket track ABC-123 --repo acme/api
+ticket track ABC-123               # the repo comes from the summary
+ticket track ABC-123 --repo acme/api            # ...or say it outright
 ticket refresh                    # fetch, fast-forward, and re-read every row
 ticket next ABC-123               # run whatever the resolver says is next
 ticket reset ABC-123 implement    # re-run a step and everything below it
@@ -90,6 +91,34 @@ The old order is still accepted — with a note saying where the key moved — b
 There is no per-key registration and never was: `track` registers a ticket, and every step and review in `config.yml` is available on it from that moment.
 The store only records what has happened to a stage, which is why `show`, `next`, `run`, `skip`, `release`, `reset` and `log` all resolve a stage name against the config alone and all accept the same set.
 `ticket stages --list` is that set.
+
+**A repo you do not have to type.**
+`ticket track ABC-123` with no `--repo` asks the tracker for the ticket's summary and reads the repo out of it, so a key is all a new ticket needs (issue #8).
+The config says how: `repos.<repo>.aliases` names the other things a repo is called, `owner:` says which account a bare name belongs to, and `infer.repo.patterns` says what to look for in a summary.
+
+```yaml
+owner: acme
+
+repos:
+  acme/api:
+    aliases: [API]
+
+infer:
+  repo:
+    patterns:
+      - "[{alias}]"
+```
+
+With that, `[API] harden the token check` tracks against `acme/api`.
+Everything outside a placeholder is matched literally — `[` is a bracket someone typed, not a character class — and matching ignores case.
+All three keys are optional; omit them and `track` behaves exactly as it always did.
+
+**Nothing is guessed.**
+A summary naming two repos records neither and names both; one naming none says so; a tracker that cannot answer says that.
+Every one of those still writes the row and exits 0, because a ticket with no repo is one you can still `refresh`, retitle or point by hand, and the repo can be filled in later with `ticket track ABC-123 --repo acme/api`.
+Inference never overwrites a repo already recorded, so re-tracking cannot move a ticket someone pointed by hand.
+
+`--repo` takes an alias or a bare name as well as `owner/repo`, and means the same thing to every verb that accepts it.
 
 ## Checking a config
 
