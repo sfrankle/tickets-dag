@@ -280,8 +280,9 @@ def _interactive_tui(stdscr, args) -> int:
     selected = 0
     message = ""
 
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+
     while True:
-        ctx = Context.load(no_sync=getattr(args, "no_sync", False))
         current = tui_module.filtered(
             tui_module.rows(ctx.cfg, ctx.store), filter_name=filter_name, search=search
         )
