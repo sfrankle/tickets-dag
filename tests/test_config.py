@@ -729,3 +729,48 @@ def test_an_alias_claimed_by_two_repos_is_an_error(tmp_path):
     text = INFER.replace("aliases: [DAG, tickets]", "aliases: [DAG, csm]")
     with pytest.raises(ConfigError, match="csm"):
         load_config(write(tmp_path, text))
+
+
+TWO_OWNERS = textwrap.dedent("""
+    models:
+      opus: claude-opus-5
+
+    defaults:
+      model: opus
+
+    owner: sfrankle
+
+    steps:
+      - id: evaluate
+        model: opus
+        prompt: prompts/evaluate.md
+
+    repos:
+      sfrankle/api: {}
+      acme/api: {}
+
+    infer:
+      repo:
+        patterns:
+          - "[{repo}]"
+""")
+
+
+def test_a_bare_name_two_owners_claim_resolves_to_neither(tmp_path):
+    """Matching the wrong clone is not recoverable; not matching is."""
+    cfg = load_config(write(tmp_path, TWO_OWNERS))
+    assert cfg.resolve_repo("api") == "sfrankle/api"
+    assert cfg.resolve_repo("acme/api") == "acme/api"
+
+
+def test_a_bare_name_two_owners_claim_is_not_inferred(tmp_path):
+    cfg = load_config(write(tmp_path, TWO_OWNERS))
+    guess = cfg.infer_repo("[api] tighten it")
+    assert guess.repo is None
+
+
+def test_a_repo_override_that_is_not_a_mapping_says_so(tmp_path):
+    """`ticket config --validate` reports this rather than raising a traceback."""
+    broken = TWO_OWNERS.replace("sfrankle/api: {}", "sfrankle/api: nope")
+    with pytest.raises(ConfigError, match="repos.sfrankle/api must be a mapping"):
+        load_config(write(tmp_path, broken))

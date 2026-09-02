@@ -701,7 +701,6 @@ def _repo_tokens(repos: dict, owner: str | None) -> dict[str, str]:
     config rather than an accident of two owners, so that one is an error.
     """
     tokens: dict[str, str] = {}
-    bare_seen: dict[str, str] = {}
     for repo, override in repos.items():
         tokens[repo.lower()] = repo
         raw_aliases = (override or {}).get("aliases")
@@ -720,15 +719,14 @@ def _repo_tokens(repos: dict, owner: str | None) -> dict[str, str]:
                     f"alias {alias!r} is claimed by both {claimed} and {repo}"
                 )
             tokens[alias.lower()] = repo
+    claimants: dict[str, set[str]] = {}
     for repo in repos:
-        bare = repo.split("/")[-1].lower()
-        if bare in tokens and tokens[bare] != repo:
-            continue
-        if bare in bare_seen and bare_seen[bare] != repo:
-            tokens.pop(bare, None)
-            continue
-        bare_seen[bare] = repo
-        tokens.setdefault(bare, repo)
+        claimants.setdefault(repo.split("/")[-1].lower(), set()).add(repo)
+    for bare, owners in claimants.items():
+        if len(owners) == 1:
+            # `setdefault`, so an alias someone wrote down beats a bare name
+            # that falls out of another repo's spelling.
+            tokens.setdefault(bare, next(iter(owners)))
     return tokens
 
 
@@ -853,6 +851,13 @@ def load_config(path: Path | None = None) -> Config:
     if not isinstance(wt, dict):
         raise ConfigError("worktrees: must be a mapping")
     _reject_unknown("worktrees:", wt, WORKTREES_KEYS)
+    repos = dict(raw.get("repos") or {})
+    # Shape-checked before anything reads it, so a bad entry is a ConfigError
+    # from `ticket config --validate` rather than a traceback out of the token
+    # table built below.
+    for repo, override in repos.items():
+        if not isinstance(override, dict):
+            raise ConfigError(f"repos.{repo} must be a mapping")
     cfg = Config(
         store=_anchor(store, root) if store else root,
         root=root,
@@ -860,7 +865,7 @@ def load_config(path: Path | None = None) -> Config:
         default_model=default_model,
         steps=_load_steps(raw.get("steps") or [], default_model),
         reviews=_load_reviews(raw.get("reviews") or [], default_model),
-        repos=dict(raw.get("repos") or {}),
+        repos=repos,
         worktrees=Worktrees(
             enabled=bool(wt.get("enabled", True)),
             root=_anchor(wt["root"], root)
@@ -877,15 +882,13 @@ def load_config(path: Path | None = None) -> Config:
         owner=_load_owner(raw.get("owner")),
         inference=_load_inference(
             raw.get("infer"),
-            _repo_tokens(dict(raw.get("repos") or {}), raw.get("owner")),
+            _repo_tokens(repos, raw.get("owner")),
         ),
     )
     # Validate every repo override eagerly, not just the ones a given run
     # happens to call `for_repo` on: a bad repos: entry should fail at load
     # time, before the DAG is ever built for that repo.
     for repo, override in cfg.repos.items():
-        if not isinstance(override, dict):
-            raise ConfigError(f"repos.{repo} must be a mapping")
         _reject_unknown(f"repos.{repo}", override, REPO_KEYS)
         repo_steps = override.get("steps") or {}
         if not isinstance(repo_steps, dict):

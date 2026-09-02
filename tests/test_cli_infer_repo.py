@@ -181,3 +181,34 @@ def test_config_json_carries_the_owner_and_aliases(env, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["owner"] == "sfrankle"
     assert data["repos"]["sfrankle/tickets-dag"]["aliases"] == ["DAG"]
+
+
+def break_tracker(env) -> None:
+    """A tracker that answers with an error, the way an offline one does."""
+    script = env / "scripts" / "summary.sh"
+    script.write_text('#!/bin/sh\necho "no such issue" >&2\nexit 1\n')
+    script.chmod(0o755)
+
+
+def test_a_tracker_that_fails_still_tracks_the_ticket(env, capsys):
+    """A row with no repo beats no row: failing here would strand it unwritten."""
+    break_tracker(env)
+    assert main(["track", "ABC-123"]) == 0
+    capsys.readouterr()
+    assert row(env, "ABC-123")["tracked"] is True
+
+
+def test_a_tracker_that_fails_says_so(env, capsys):
+    break_tracker(env)
+    main(["track", "ABC-123"])
+    err = capsys.readouterr().err
+    assert "tracker" in err
+    assert "ticket track ABC-123 --repo" in err
+
+
+def test_a_repo_already_recorded_does_not_ask_the_tracker(env):
+    """The guess would be discarded, so the round trip buys nothing."""
+    main(["track", "ABC-123", "--repo", "DAG"])
+    break_tracker(env)
+    assert main(["track", "ABC-123"]) == 0
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"

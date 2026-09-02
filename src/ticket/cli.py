@@ -30,7 +30,7 @@ from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, config_path, load_config
 from .effort import EFFORTS
-from .errors import TicketError
+from .errors import GhError, TicketError
 from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
 from .store import Store, now
 
@@ -235,15 +235,22 @@ def cmd_track(args) -> int:
         ticket["repo"] = ctx.cfg.resolve_repo(args.repo)
         why = ""
     else:
-        # The summary is what inference reads, so it has to be fetched before
-        # the guess rather than left to `refresh` (issue #8: the fact that
-        # repairs the ticket must not be gated on the ticket being repaired).
-        fetch_summary(ctx, ticket)
         why = ""
         if not ticket["repo"]:
-            guess = ctx.cfg.infer_repo(ticket["summary"])
-            ticket["repo"] = guess.repo or ""
-            why = guess.why
+            # The summary is what inference reads, so it has to be fetched
+            # before the guess rather than left to `refresh` (issue #8: the
+            # fact that repairs the ticket must not be gated on the ticket
+            # being repaired). A tracker that cannot answer — offline, no VPN,
+            # a key it has never heard of — costs the guess, not the row.
+            try:
+                fetch_summary(ctx, ticket)
+            except GhError as exc:
+                print(f"warning: {exc}", file=sys.stderr)
+                why = "the tracker did not answer"
+            else:
+                guess = ctx.cfg.infer_repo(ticket["summary"])
+                ticket["repo"] = guess.repo or ""
+                why = guess.why
 
     ctx.store.write_ticket(ticket)
     if ticket["repo"]:
