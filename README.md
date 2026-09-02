@@ -134,7 +134,9 @@ Anything that stops the file loading at all — a cycle in `needs:`, an unknown 
 
 A `repos.<repo>.path` that is not a directory is reported as a warning instead, and does not change the exit code.
 The distinction is who owns the missing thing: a prompt or a script is the config's own, so a missing one means the config is wrong, while a clone is the machine's, and one that has not been made yet — or a placeholder like the `~/code/api` the example ships — is the ordinary state of a config on a fresh machine.
-Nothing is hidden by being a warning: both lists print, and a step that needs the checkout still fails when it runs — `exit 1`, with `No such file or directory` naming the path in its log — so the warning is the earlier telling of the same thing, not a substitute for it.
+Nothing is hidden by being a warning: both lists print, and anything that needs the checkout still fails when it reaches it, naming the path.
+A step exits 127 with `No such file or directory` in its log; a `local` review and a hard fix stop with that path in the error.
+The warning is the earlier telling of the same thing, not a substitute for it.
 That is what lets `examples/config.yml` validate clean out of the box, which is the only reason to trust `--validate` at all.
 
 **An unknown key is an error.**

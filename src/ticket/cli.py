@@ -886,7 +886,7 @@ def config_warnings(cfg: Config) -> list[str]:
     A prompt or script is the config's own: it names one, and if it is not there the config is wrong.
     A `repos.<repo>.path` is a machine's: it names a clone, and a clone that is not made yet — or a placeholder like the `~/code/api` `examples/config.yml` ships — is the normal state of a config on a machine that has not been set up, not an error in the file (#23.3).
 
-    Nothing is swallowed by being a warning. Both lists are printed, and a step that actually needs the checkout still fails at the point of use: `steps.workdir` hands the recorded path to `subprocess` as its `cwd` without checking it, so the run ends `exit 1` with `No such file or directory: <path>` in its log. The warning is the earlier, cheaper telling of the same thing.
+    Nothing is swallowed by being a warning. Both lists are printed, and everything that actually needs the checkout still fails at the point of use, naming the path: a step ends `exit 127` with `No such file or directory: <path>` in its log, while a `local` review and a hard fix raise `TicketError` around the same `OSError`. The warning is the earlier, cheaper telling of the same thing.
     """
     warnings: list[str] = []
     for repo in cfg.repos:

@@ -387,6 +387,17 @@ def test_a_hard_fix_that_changes_nothing_is_reported_not_crashed(
     assert fix_one(cfg, store, ticket_doc(worktree), "acme/api#115", "f01") == "open"
 
 
+def test_a_hard_fix_names_a_worktree_that_is_gone(
+    cfg, store, worktree, fake_bin, tmp_path
+):
+    """A recorded worktree can be deleted between runs. That has to read as a
+    TicketError naming the path, not a FileNotFoundError traceback."""
+    seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
+    gone = tmp_path / "deleted-worktree"
+    with pytest.raises(TicketError, match="deleted-worktree"):
+        fix_one(cfg, store, ticket_doc(gone), "acme/api#115", "f01")
+
+
 def test_a_hard_fix_syncs_before_running_the_session(cfg, store, worktree, fake_bin):
     """Decision #22: gh.sync runs before every command that reads a checkout.
     A stale worktree must not feed a hard-fix session outdated code."""
