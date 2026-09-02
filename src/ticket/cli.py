@@ -647,12 +647,37 @@ def cmd_reviews(args) -> int:
 def cmd_open(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
-    prs = ticket.get("prs") or []
-    if not prs:
+    if not ticket.get("prs"):
+        # `open` answers rather than fails: asking to look at a PR that does not
+        # exist yet is a question, not a mistake. Every other `pick_pr` caller
+        # wants its stricter error.
         print(f"{args.key} has no PR yet")
         return 0
-    repo, number = gh.split_ref(prs[-1])
+    repo, number = gh.split_ref(pick_pr(ticket, args))
     gh.run(["gh", "pr", "view", number, "--repo", repo, "--web"], retries=1)
+    return 0
+
+
+def cmd_unlock(args) -> int:
+    """Clear a lock whose run is gone.
+
+    Deliberately not a WRITE_VERB: taking the per-ticket lock first would fail
+    on exactly the lock this exists to clear.
+    """
+    store = Context.load(no_sync=True).store
+    status = store.lock_status(args.key)
+    if status is None:
+        print(f"{args.key} is not locked")
+        return 0
+    if status.alive:
+        raise TicketError(
+            f"{args.key} is locked by a running process (pid {status.pid}). "
+            f"Nothing removed — stop that run first, or delete "
+            f"{store.lock_path(args.key)} by hand."
+        )
+    store.clear_lock(args.key)
+    owner = f"pid {status.pid} is not running" if status.pid else "it recorded no pid"
+    print(f"cleared {args.key} lock ({owner})")
     return 0
 
 
@@ -1094,6 +1119,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
     p = add("open", cmd_open, help="the PR in a browser")
+    p.add_argument("key")
+    p.add_argument("--pr")
+
+    p = add("unlock", cmd_unlock, help="clear a lock a dead run left behind")
     p.add_argument("key")
 
     p = add("refresh", cmd_refresh, help="refresh gh and tracker state")

@@ -62,7 +62,8 @@ ticket refresh                    # fetch, fast-forward, and re-read every row
 ticket next ABC-123               # run whatever the resolver says is next
 ticket reset ABC-123 implement    # re-run a step and everything below it
 ticket log ABC-123 implement      # what that step's last run wrote
-ticket open ABC-123               # the PR in a browser
+ticket open ABC-123               # the PR in a browser (--pr for an older one)
+ticket unlock ABC-123             # clear a lock a dead run left behind
 ticket stages --list              # the steps and reviews this config declares
 ticket config                     # the resolved config
 ticket config --validate          # ...and whether it actually works
