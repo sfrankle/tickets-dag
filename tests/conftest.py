@@ -68,6 +68,32 @@ class FakeBin:
 
 
 @pytest.fixture
+def fake_tracker(fake_bin):
+    """Answer as whatever `tracker.summary:` names, so `track` and `refresh` can
+    shell out to one.
+
+    `fake_bin` only wires up gh/git/claude; a tracker is any binary a config
+    points at, so it gets a copy of the same fake under that name. Call the
+    fixture again to change the answer — `exit_code=1` is the tracker that
+    cannot answer at all: offline, no VPN, a key it has never heard of.
+    """
+
+    def answer(summary: str = "", exit_code: int = 0) -> None:
+        fake_bin.respond(
+            "faketracker issue view",
+            stdout=summary,
+            exit_code=exit_code,
+            stderr="no such issue" if exit_code else "",
+        )
+
+    body = FAKE_TOOL.read_text().split("\n", 1)[1]
+    target = fake_bin.directory / "faketracker"
+    target.write_text(f"#!{sys.executable}\n{body}")
+    target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return answer
+
+
+@pytest.fixture
 def fake_bin(tmp_path, monkeypatch):
     directory = tmp_path / "fakebin"
     directory.mkdir()

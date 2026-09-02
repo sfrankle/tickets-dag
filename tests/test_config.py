@@ -732,29 +732,19 @@ def test_an_alias_claimed_by_two_repos_is_an_error(tmp_path):
         load_config(write(tmp_path, text))
 
 
-TWO_OWNERS = textwrap.dedent("""
-    models:
-      opus: claude-opus-5
-
-    defaults:
-      model: opus
-
-    owner: sfrankle
-
-    steps:
-      - id: evaluate
-        model: opus
-        prompt: prompts/evaluate.md
-
-    repos:
-      sfrankle/api: {}
-      acme/api: {}
-
-    infer:
-      repo:
-        patterns:
-          - "[{repo}]"
-""")
+# The same config, with two owners laying claim to the bare name `api`.
+TWO_OWNERS = INFER.replace(
+    """repos:
+  sfrankle/content-security-mode:
+    aliases: [CSM]
+  sfrankle/tickets-dag:
+    aliases: [DAG, tickets]
+""",
+    """repos:
+  sfrankle/api: {}
+  acme/api: {}
+""",
+).replace('      - "[{alias}]"\n', "")
 
 
 def test_a_bare_name_two_owners_claim_resolves_to_neither(tmp_path):
