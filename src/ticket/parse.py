@@ -24,7 +24,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from functools import cache
 
-from .config import Config
+from .config import PARSE_FLAGS, Config
 from .errors import TicketError
 
 FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
@@ -74,6 +74,8 @@ DASHES = "-" + chr(0x2013) + chr(0x2014)
 # What sits between a bolded lead and the sentence after it: an optional parenthesised path, then punctuation.
 LEAD_JUNK_RE = re.compile(r"^\s*(?:\([^)]*\))?\s*[:;," + re.escape(DASHES) + r"]*\s*")
 LEAD_TRAIL = " :;," + DASHES
+# An unclosed `**` is markup, not words: `summary` is printed as a row and dedupes on, so it carries neither.
+STRAY_STARS_RE = re.compile(r"^\*+\s*|\s*\*+$")
 
 # A path in parentheses right after the lead is the format telling us the file outright, so it wins over anything else quoted in the prose.
 PAREN_PATH_RE = re.compile(r"\(\s*(?:in\s+|at\s+|see\s+)?`([^`]+)`\s*\)")
@@ -136,14 +138,6 @@ BUILTIN = Grammar(
     empty=EMPTY_RE,
 )
 
-_FLAGS = {
-    "details": re.DOTALL | re.IGNORECASE,
-    "bullet": re.MULTILINE,
-    "lead": re.MULTILINE,
-    "verdict": re.MULTILINE,
-    "file": 0,
-}
-
 
 @cache
 def _compiled(pattern: str, flags: int) -> re.Pattern:
@@ -156,8 +150,8 @@ def grammar_for(cfg: Config, author: str | None) -> Grammar:
     if profile is None:
         return BUILTIN
     overrides = {
-        name: _compiled(pattern, _FLAGS[name])
-        for name in _FLAGS
+        name: _compiled(pattern, PARSE_FLAGS[name])
+        for name in PARSE_FLAGS
         if (pattern := getattr(profile, name)) is not None
     }
     return replace(BUILTIN, **overrides)
@@ -181,7 +175,7 @@ def _cap(text: str, limit: int = MAX_SUMMARY) -> str:
     cut = text[: limit - 1].rstrip()
     if " " in cut:
         cut = cut[: cut.rindex(" ")]
-    return cut.rstrip(" ,;:.-") + "…"
+    return cut.rstrip(" ,;:." + DASHES) + "…"
 
 
 def _first_sentence(text: str) -> str:
@@ -201,7 +195,7 @@ def _summarise(text: str) -> str:
         return ""
     match = BOLD_LEAD_RE.match(flat)
     if not match:
-        return _cap(_first_sentence(flat))
+        return _cap(STRAY_STARS_RE.sub("", _first_sentence(flat)))
     lead = match.group("lead").strip().rstrip(LEAD_TRAIL).strip()
     rest = LEAD_JUNK_RE.sub("", flat[match.end() :])
     if not lead:
@@ -229,8 +223,9 @@ def _as_path(raw: str) -> str | None:
 
 def _file_of(text: str, pattern: re.Pattern | None = None) -> str | None:
     if pattern is not None:
+        # A configured pattern is taken at its word: it names the capture, so it is not second-guessed by `_as_path` the way the built-in tiers are.
         match = pattern.search(text)
-        return (match.group(1) if match.groups() else match.group(0)) if match else None
+        return match.group(1) if match else None
     for candidates in (PAREN_PATH_RE.finditer(text), BACKTICK_RE.finditer(text)):
         paths = [path for match in candidates if (path := _as_path(match.group(1)))]
         if not paths:

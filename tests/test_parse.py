@@ -7,7 +7,9 @@ import pytest
 from ticket.collect import _fingerprint
 from ticket.config import load_config
 from ticket.parse import (
+    DASHES,
     MAX_SUMMARY,
+    _cap,
     haiku_prompt,
     parse,
     parse_haiku,
@@ -465,3 +467,27 @@ def test_a_path_beats_a_bare_filename_quoted_in_the_prose(cfg):
         **Verdict:** changes requested.
     """)
     assert parse_script(cfg, review)[0]["file"] == "src/api/client.py"
+
+
+def test_a_summary_does_not_carry_stray_bold_markers(cfg):
+    """An unclosed `**` is markup the reader never asked for, and `summary` prints as a row."""
+    review = textwrap.dedent("""
+        <details>
+        <summary>🟡 Maintenance</summary>
+
+        * **The retry loop never caps its backoff, so three callers spin.
+
+        </details>
+
+        **Verdict:** changes requested.
+    """)
+    assert parse_script(cfg, review)[0]["summary"] == (
+        "The retry loop never caps its backoff, so three callers spin."
+    )
+
+
+def test_a_capped_summary_does_not_end_on_a_dangling_dash():
+    """`_cap` strips the hyphen it cuts back to; the en and em dash are the same case."""
+    for dash in DASHES:
+        text = f"{'word ' * 23}{dash} and then some more text after the break"
+        assert _cap(text) == f"{'word ' * 23}".strip() + "…"

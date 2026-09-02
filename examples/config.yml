@@ -52,6 +52,11 @@ severities:
 # A profile applies only to the author it names, and replaces only the patterns it gives — everything else stays the built-in.
 # Regexes in YAML rot, so prefer widening the built-in to carrying one of these.
 #
+# Each pattern is compiled with the flags it needs and no others, at load and at run alike: `details` with DOTALL and IGNORECASE, `verdict` with MULTILINE, the rest with none.
+# `bullet` and `lead` are matched against one line at a time, so `^` already anchors the line.
+# `file` is taken at its word — its first capturing group is recorded as the path with none of the checks the built-in applies.
+# A pattern that backtracks pathologically (`(a+)+`) will hang `collect` on the review that hits it; nothing here bounds it for you.
+#
 # parse:
 #   sources:
 #     - author: odd-bot[bot]

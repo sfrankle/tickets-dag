@@ -85,6 +85,7 @@ Anything else — a human comment, a bot whose output you do not control, format
 A body carrying our markers whose sections we cannot split counts as *not ours* and goes to Haiku too; recording it as ours with zero findings is how a review gets lost silently.
 Change `severities:` and both paths follow: the script parser looks for the new markers, and the Haiku prompt asks for the new names.
 For a bot that writes something genuinely different, an optional `parse.sources` block overrides the built-in grammar for that author alone (`details:`, `bullet:`, `lead:`, `file:`, `verdict:`, each optional); it exists so a new bot is onboarded without a release, not as the normal way to parse.
+A profile is validated at load under the same flags it runs under, and `examples/config.yml` states which those are; `file:` is the one pattern taken at its word, recording its capture with none of the path checks the built-in applies.
 The example review prompts under `examples/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.

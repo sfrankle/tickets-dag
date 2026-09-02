@@ -447,6 +447,15 @@ def _load_severities(raw) -> tuple[Severity, ...]:
 
 
 PARSE_PATTERNS = ("details", "bullet", "lead", "file", "verdict")
+# The flags each pattern is compiled with, here rather than in `parse.py` so that a profile is validated at load under exactly the flags it will run under.
+# `bullet` and `lead` are matched against one line at a time, so `^` anchors the line with no flag needed.
+PARSE_FLAGS = {
+    "details": re.DOTALL | re.IGNORECASE,
+    "bullet": 0,
+    "lead": 0,
+    "verdict": re.MULTILINE,
+    "file": 0,
+}
 
 
 def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
@@ -494,7 +503,7 @@ def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
             if not isinstance(pattern, str):
                 raise ConfigError(f"parse source {author}: {name} must be a regex")
             try:
-                compiled = re.compile(pattern)
+                compiled = re.compile(pattern, PARSE_FLAGS[name])
             except re.error as exc:
                 raise ConfigError(
                     f"parse source {author}: {name} is not a valid regex: {exc}"
