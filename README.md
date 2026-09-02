@@ -56,6 +56,8 @@ Two families of verb, and `ticket --help` shows which is which.
 # management
 ticket                            # the queue
 ticket ABC-123                    # one row: steps, next action, findings
+ticket tui                        # interactive dashboard for tracked tickets
+ticket tui --plain                # one text snapshot, for pipes or a dumb terminal
 ticket track ABC-123 --repo acme/api
 ticket refresh                    # fetch, fast-forward, and re-read every row
 ticket next ABC-123               # run whatever the resolver says is next
@@ -81,6 +83,14 @@ ticket effort ABC-123 f02 hard    # override how a finding gets fixed
 ticket decide ABC-123 f03 "covered by ABC-140"
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 ```
+
+## TUI
+
+`ticket tui` opens a keyboard-first dashboard over the same tracked rows the queue prints.
+It reuses the existing resolver and stage commands, so `s` advances the selected ticket with `ticket next`, number keys `1` through `9` run or release the named stage directly, `t` tracks a key, `o` opens the active PR, `R` refreshes the row, `b` toggles the ready queue, `/` searches, and `q` quits.
+
+When stdin or stdout is not a terminal, or when you ask for `--plain`, it prints one plain-text snapshot instead of entering the interactive screen.
+`--ascii` swaps the stage markers to ASCII for a terminal that cannot render Unicode cleanly.
 
 **The key comes first, always.**
 `run`, `skip` and `release` used to read `<step> <key>` while every other verb read `<key>` first, so `ticket skip ABC-123 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `ticket show` had just called `next` (issue #12).

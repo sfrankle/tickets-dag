@@ -14,11 +14,13 @@ There is no per-key registration, and every verb here resolves a stage name agai
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
 import shutil
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from dataclasses import replace as replace_fields
 from pathlib import Path
@@ -28,6 +30,7 @@ from . import fix as fix_module
 from . import gh
 from . import reviews as reviews_module
 from . import steps as steps_module
+from . import tui as tui_module
 from .config import Config, config_path, load_config
 from .effort import EFFORTS
 from .errors import TicketError
@@ -225,6 +228,172 @@ def cmd_show(args) -> int:
 
 def cmd_queue(args) -> int:
     return print_queue(Context.load(no_sync=getattr(args, "no_sync", False)), args.json)
+
+
+def _tui_run(argv: list[str], *, no_sync: bool) -> tuple[int, str]:
+    if no_sync:
+        argv = ["--no-sync", *argv]
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        code = main(argv)
+    text = "\n".join(
+        part for part in (stdout.getvalue().strip(), stderr.getvalue().strip()) if part
+    )
+    return code, text or "ok"
+
+
+def _tui_prompt(stdscr, prompt: str) -> str:
+    import curses
+
+    height, width = stdscr.getmaxyx()
+    text = prompt[: max(0, width - 1)]
+    stdscr.move(height - 1, 0)
+    stdscr.clrtoeol()
+    stdscr.addnstr(height - 1, 0, text, width - 1)
+    stdscr.refresh()
+    curses.echo()
+    try:
+        raw = stdscr.getstr(
+            height - 1, min(len(text), width - 1), max(1, width - len(text) - 1)
+        )
+    finally:
+        curses.noecho()
+    return raw.decode(errors="replace").strip()
+
+
+def _tui_stage_argv(key: str, stage: dict) -> list[str]:
+    if stage["kind"] == "review":
+        return ["review", key, stage["id"]]
+    if stage["kind"] == "gate":
+        return ["release", key, stage["id"]]
+    return ["run", key, stage["id"]]
+
+
+def _interactive_tui(stdscr, args) -> int:
+    import curses
+
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    filter_name = args.filter
+    search = args.search
+    selected = 0
+    message = ""
+
+    while True:
+        ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+        current = tui_module.filtered(
+            tui_module.rows(ctx.cfg, ctx.store), filter_name=filter_name, search=search
+        )
+        if selected >= len(current):
+            selected = max(0, len(current) - 1)
+
+        snapshot = tui_module.render_snapshot(
+            ctx.cfg,
+            ctx.store,
+            filter_name=filter_name,
+            search=search,
+            selected=selected,
+            ascii_only=args.ascii,
+        )
+        height, width = stdscr.getmaxyx()
+        lines = snapshot.splitlines()
+        if message:
+            lines.append(f"Message: {message}")
+        stdscr.erase()
+        for row, line in enumerate(lines[: max(0, height - 1)]):
+            stdscr.addnstr(row, 0, line, max(0, width - 1))
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (ord("q"), 27):
+            return 0
+        if key in (ord("j"), curses.KEY_DOWN):
+            if current:
+                selected = min(selected + 1, len(current) - 1)
+            continue
+        if key in (ord("k"), curses.KEY_UP):
+            if current:
+                selected = max(selected - 1, 0)
+            continue
+        if key == ord("b"):
+            filter_name = "all" if filter_name == "ready" else "ready"
+            continue
+        if key == ord("/"):
+            search = _tui_prompt(stdscr, "Search: ")
+            selected = 0
+            continue
+        if not current:
+            if key == ord("t"):
+                new_key = _tui_prompt(stdscr, "Track key: ")
+                repo = _tui_prompt(stdscr, "Repo (owner/repo): ")
+                if new_key and repo:
+                    _, message = _tui_run(
+                        ["track", new_key, "--repo", repo], no_sync=args.no_sync
+                    )
+                else:
+                    message = "tracking cancelled"
+            continue
+
+        row = current[selected]
+        if key in (ord("s"), ord(" ")):
+            _, message = _tui_run(["next", row["key"]], no_sync=args.no_sync)
+            continue
+        if key in (ord("R"), curses.KEY_F5):
+            _, message = _tui_run(["refresh", row["key"]], no_sync=args.no_sync)
+            continue
+        if key == ord("o"):
+            _, message = _tui_run(["open", row["key"]], no_sync=args.no_sync)
+            continue
+        if key == ord("t"):
+            new_key = _tui_prompt(stdscr, "Track key: ")
+            repo = _tui_prompt(stdscr, "Repo (owner/repo): ")
+            if new_key and repo:
+                _, message = _tui_run(
+                    ["track", new_key, "--repo", repo], no_sync=args.no_sync
+                )
+            else:
+                message = "tracking cancelled"
+            continue
+        if ord("1") <= key <= ord("9"):
+            index = key - ord("1")
+            if index < len(row["stages"]):
+                _, message = _tui_run(
+                    _tui_stage_argv(row["key"], row["stages"][index]),
+                    no_sync=args.no_sync,
+                )
+            else:
+                message = "no stage on that key"
+            continue
+
+
+def cmd_tui(args) -> int:
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+    if args.plain or not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            tui_module.render_snapshot(
+                ctx.cfg,
+                ctx.store,
+                filter_name=args.filter,
+                search=args.search,
+                ascii_only=args.ascii,
+            )
+        )
+        return 0
+    try:
+        import curses
+    except ImportError:
+        print(
+            tui_module.render_snapshot(
+                ctx.cfg,
+                ctx.store,
+                filter_name=args.filter,
+                search=args.search,
+                ascii_only=True,
+            )
+        )
+        return 0
+    return curses.wrapper(_interactive_tui, args)
 
 
 def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
@@ -953,6 +1122,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("track", cmd_track, help="start driving an untracked row")
     p.add_argument("key")
     p.add_argument("--repo", required=True, help="owner/repo")
+
+    p = add("tui", cmd_tui, help="interactive dashboard for tracked tickets")
+    p.add_argument(
+        "--plain",
+        action="store_true",
+        help="render one plain-text snapshot and exit",
+    )
+    p.add_argument(
+        "--ascii",
+        action="store_true",
+        help="use ASCII status markers instead of Unicode",
+    )
+    p.add_argument(
+        "--filter",
+        choices=list(tui_module.FILTERS),
+        default="all",
+        help="initial ticket filter",
+    )
+    p.add_argument("--search", default="", help="initial search text")
 
     p = add("next", cmd_next, help="run whatever the resolver says is next")
     p.add_argument("key")
