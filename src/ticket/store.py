@@ -4,13 +4,14 @@
       tickets/
         KEY-123/
           state.json                     the ticket
-          acme-api_115.json              one PR
-          acme-api_115_findings.json     that PR's findings
+          api_115.json                   one PR
+          api_115_findings.json          that PR's findings
           logs/                          one file per run
       locks/
 
 Everything one ticket knows is in one directory, so a ticket can be read, archived or deleted by looking at a single place.
 A store written by an older version is type-grouped (`tickets/KEY.json`, `prs/`, `findings/`, `logs/KEY/`); it is migrated in place the first time a `Store` is opened on it.
+PR documents written before #27 carry the repo owner in their name (`acme-api_115.json`); they are read where they lie rather than renamed.
 
 Concurrency is handled by writing to a temp file and renaming, plus an advisory
 lock file per ticket. The CLI is single-user and single-machine; this is enough.
@@ -35,9 +36,21 @@ Nothing writes a `state.json` there, so it never shows up as a ticket; a later r
 
 
 def pr_slug(pr_ref: str) -> str:
-    """`acme/api#115` -> `acme-api_115`, the on-disk name for a PR.
+    """`acme/api#115` -> `api_115`, the on-disk name for a PR.
+
+    The owner is dropped (issue #27): it is the same for every PR a ticket has, and the name is read far more often than it disambiguates.
+    Two owners of a same-named repo collide, but only within one ticket's directory, and a ticket works one repo.
 
     The `_` before the number matters: without it `acme/api-115#7` and `acme/api#1157` would land in the same file.
+    """
+    repo, _, number = pr_ref.partition("#")
+    return f"{repo.rpartition('/')[2]}_{number}"
+
+
+def legacy_pr_slug(pr_ref: str) -> str:
+    """The pre-#27 on-disk name, `acme/api#115` -> `acme-api_115`.
+
+    Only ever looked for, never written: a store written before the owner was dropped keeps the filenames it has, so both forms have to resolve.
     """
     repo, _, number = pr_ref.partition("#")
     return f"{repo.replace('/', '-')}_{number}"
@@ -80,13 +93,22 @@ class Store:
         """
         return _key_of_pr(self.root / "tickets", pr_ref) or UNKEYED
 
+    def _document(self, pr_ref: str, key: str | None, suffix: str) -> Path:
+        """Where one of a PR's documents is, or is to be written.
+
+        A file already on disk under the pre-#27 name wins: a store keeps the names it has, and writing the short name beside the long one would split one PR across two documents.
+        """
+        directory = self.ticket_dir(key or self._key_for_pr(pr_ref))
+        legacy = directory / f"{legacy_pr_slug(pr_ref)}{suffix}.json"
+        if legacy.is_file():
+            return legacy
+        return directory / f"{pr_slug(pr_ref)}{suffix}.json"
+
     def _pr_file(self, pr_ref: str, key: str | None = None) -> Path:
-        key = key or self._key_for_pr(pr_ref)
-        return self.ticket_dir(key) / f"{pr_slug(pr_ref)}.json"
+        return self._document(pr_ref, key, "")
 
     def _findings_file(self, pr_ref: str, key: str | None = None) -> Path:
-        key = key or self._key_for_pr(pr_ref)
-        return self.ticket_dir(key) / f"{pr_slug(pr_ref)}_findings.json"
+        return self._document(pr_ref, key, "_findings")
 
     # --- logs ----------------------------------------------------------
 
@@ -174,14 +196,25 @@ class Store:
         return self._read(self._ticket_file(key))
 
     def write_ticket(self, data: dict) -> None:
+        # Every write is what "last updated" means, so it is stamped in the one place every write goes through rather than at each call site.
+        data["updated"] = now()
         self._write(self._ticket_file(data["key"]), data)
 
     def list_tickets(self) -> list[dict]:
+        """Every ticket, most recently updated first (issue #27).
+
+        Timestamps are to the second, so writes within one second tie; the key breaks the tie, which keeps the order stable rather than arbitrary.
+        A ticket written before `updated` existed sorts last, where a ticket nothing has touched belongs.
+        """
         directory = self.root / "tickets"
         if not directory.is_dir():
             return []
-        tickets = [self._read(p) for p in directory.glob("*/state.json")]
-        return sorted((t for t in tickets if t), key=lambda t: t["key"])
+        tickets = sorted(
+            (t for t in (self._read(p) for p in directory.glob("*/state.json")) if t),
+            key=lambda t: t["key"],
+        )
+        # Sorted by key first and stably by time second, so tickets sharing a timestamp keep a fixed order instead of the directory's.
+        return sorted(tickets, key=lambda t: t.get("updated", ""), reverse=True)
 
     # --- prs -----------------------------------------------------------
 
@@ -439,8 +472,12 @@ def _key_of_pr(tickets: Path, pr_ref: str | None) -> str | None:
     """
     if not pr_ref:
         return None
-    slug = pr_slug(pr_ref)
-    for name in (f"{slug}.json", f"{slug}_findings.json"):
+    names = [
+        f"{slug}{suffix}.json"
+        for slug in (pr_slug(pr_ref), legacy_pr_slug(pr_ref))
+        for suffix in ("", "_findings")
+    ]
+    for name in dict.fromkeys(names):
         placed = next(iter(sorted(tickets.glob(f"*/{name}"))), None)
         if placed:
             return placed.parent.name

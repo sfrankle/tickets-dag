@@ -118,6 +118,24 @@ def test_bare_ticket_prints_the_queue(env, capsys):
     assert "ABC-123" in out and "ABC-124" in out
 
 
+def test_the_queue_puts_the_most_recently_updated_ticket_first(env, capsys):
+    for key, updated in (
+        ("ABC-123", "2026-09-03T00:00:00Z"),
+        ("ABC-124", "2026-09-01T00:00:00Z"),
+        ("ABC-125", "2026-09-02T00:00:00Z"),
+    ):
+        main(["track", key, "--repo", "acme/api"])
+        # `now()` is per-second, so three tracks in a test all carry the same stamp.
+        path = env / "store" / "tickets" / key / "state.json"
+        doc = json.loads(path.read_text())
+        doc["updated"] = updated
+        path.write_text(json.dumps(doc))
+    capsys.readouterr()
+    main([])
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert [line.split()[0] for line in lines] == ["ABC-123", "ABC-125", "ABC-124"]
+
+
 def test_queue_json_is_machine_readable(env, capsys):
     main(["track", "ABC-123", "--repo", "acme/api"])
     capsys.readouterr()
