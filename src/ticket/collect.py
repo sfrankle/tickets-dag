@@ -40,7 +40,10 @@ def _drop_duplicates(
     Only findings still `open` count toward the fingerprint set: a finding
     that was resolved or marked wontfix and then re-raised (because the fix
     was actually wrong) must get a fresh entry rather than being silently
-    dropped as a duplicate."""
+    dropped as a duplicate.
+
+    Both fingerprint fields are derived by the parser, so a store written by an older grammar re-adds its still-open script-parsed findings once on the first collect after the upgrade.
+    It settles from there."""
     known = {
         _fingerprint(f)
         for f in store.read_findings(pr_ref, key)["findings"]
@@ -90,7 +93,7 @@ def collect(
         # The reviews we dispatch emit our known format. A body the script
         # parser recognises is therefore one of ours; anything that falls back
         # to Haiku is not, and is recorded with review: null.
-        script_findings = parse_script(cfg, source["body"])
+        script_findings = parse_script(cfg, source["body"], author=source["author"])
         review_id = next_uncollected(pr) if script_findings is not None else None
 
         if dry_run:

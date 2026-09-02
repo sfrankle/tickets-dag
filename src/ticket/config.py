@@ -113,6 +113,23 @@ class Fix:
 
 
 @dataclass(frozen=True)
+class ParseSource:
+    """One author's override of the built-in finding grammar.
+
+    The escape hatch, not the road: `parse.py` ships a grammar wide enough for the shapes review bots actually write, and a profile exists for the bot that writes something genuinely different — so a new one is onboarded without waiting for a release.
+    Every pattern is optional and replaces only itself; regexes in YAML rot, so the fewer of these a config carries, the better.
+    Patterns are compiled here, so a typo fails at load and `parse.py` is handed the compiled form rather than compiling it again per review.
+    """
+
+    author: str
+    details: re.Pattern | None = None
+    bullet: re.Pattern | None = None
+    lead: re.Pattern | None = None
+    file: re.Pattern | None = None
+    verdict: re.Pattern | None = None
+
+
+@dataclass(frozen=True)
 class Tracker:
     """How to ask an external tracker for a ticket's summary, if at all.
 
@@ -142,6 +159,7 @@ class Config:
     fix: Fix = Fix()
     tracker: Tracker = Tracker()
     key_pattern: str | None = None
+    parse_sources: tuple[ParseSource, ...] = ()
 
     def model_id(self, alias: str) -> str:
         try:
@@ -163,6 +181,15 @@ class Config:
         for severity in self.severities:
             if severity.marker and severity.marker in text:
                 return severity.id
+        return None
+
+    def parse_source(self, author: str | None) -> ParseSource | None:
+        """This author's grammar override, if the config declares one."""
+        if not author:
+            return None
+        for profile in self.parse_sources:
+            if profile.author.lower() == author.lower():
+                return profile
         return None
 
     def severity_rank(self, severity_id: str | None) -> int:
@@ -363,13 +390,18 @@ def _load_key_pattern(raw) -> str | None:
     """
     if raw is None:
         return None
-    if not isinstance(raw, str):
-        raise ConfigError("key_pattern must be a regex string")
-    try:
-        re.compile(raw)
-    except re.error as exc:
-        raise ConfigError(f"key_pattern is not a valid regex: {exc}") from exc
+    _compile_pattern(raw, 0, "key_pattern")
     return raw
+
+
+def _compile_pattern(raw, flags: int, label: str) -> re.Pattern:
+    """A config value as a compiled regex, or a `ConfigError` naming where it came from."""
+    if not isinstance(raw, str):
+        raise ConfigError(f"{label} must be a regex string")
+    try:
+        return re.compile(raw, flags)
+    except re.error as exc:
+        raise ConfigError(f"{label} is not a valid regex: {exc}") from exc
 
 
 def _load_severities(raw) -> tuple[Severity, ...]:
@@ -417,6 +449,86 @@ def _load_severities(raw) -> tuple[Severity, ...]:
             "finding falls back to."
         )
     return tuple(severities)
+
+
+# The overridable patterns, and the flags each is compiled with.
+# Compiling here rather than in `parse.py` is what lets a profile be validated at load under exactly the flags it will run under.
+# `bullet` and `lead` are matched against one line at a time, so `^` anchors the line with no flag needed.
+PARSE_FLAGS = {
+    "details": re.DOTALL | re.IGNORECASE,
+    "bullet": 0,
+    "lead": 0,
+    "file": 0,
+    "verdict": re.MULTILINE,
+}
+PARSE_PATTERNS = tuple(PARSE_FLAGS)
+
+
+def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
+    """`parse.sources:`, the optional per-author grammar override.
+
+    Omitted — the normal case — means every source is read with the built-in grammar.
+    A profile is only consulted for the author it names, so adding one can never change how anything else parses.
+    """
+    if not raw:
+        return ()
+    if not isinstance(raw, dict):
+        raise ConfigError("parse: must be a mapping with sources:")
+    unknown = sorted(set(raw) - {"sources"})
+    if unknown:
+        raise ConfigError(f"parse: has unknown key(s): {', '.join(unknown)}")
+    items = raw.get("sources")
+    if items is None:
+        return ()
+    if not isinstance(items, list) or not items:
+        raise ConfigError("parse.sources must be a non-empty list of source profiles")
+
+    profiles: list[ParseSource] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ConfigError("every parse source must be a mapping with an author:")
+        author = item.get("author")
+        if not author:
+            raise ConfigError("every parse source needs an author")
+        author = str(author)
+        if author.lower() in seen:
+            raise ConfigError(f"duplicate parse source author: {author}")
+        seen.add(author.lower())
+        stray = sorted(set(item) - {"author", *PARSE_PATTERNS})
+        if stray:
+            raise ConfigError(
+                f"parse source {author} has unknown key(s): {', '.join(stray)}. "
+                f"Known: {', '.join(PARSE_PATTERNS)}"
+            )
+        patterns: dict[str, re.Pattern] = {}
+        for name in PARSE_PATTERNS:
+            pattern = item.get(name)
+            if pattern is None:
+                continue
+            compiled = _compile_pattern(
+                pattern, PARSE_FLAGS[name], f"parse source {author}: {name}"
+            )
+            if name == "details" and not {"summary", "body"} <= set(
+                compiled.groupindex
+            ):
+                raise ConfigError(
+                    f"parse source {author}: details needs the named groups "
+                    "(?P<summary>...) and (?P<body>...)"
+                )
+            if name == "file" and compiled.groups < 1:
+                raise ConfigError(
+                    f"parse source {author}: file needs one capturing group "
+                    "for the path"
+                )
+            patterns[name] = compiled
+        if not patterns:
+            raise ConfigError(
+                f"parse source {author} overrides nothing. Give it at least one "
+                f"of: {', '.join(PARSE_PATTERNS)}"
+            )
+        profiles.append(ParseSource(author=author, **patterns))
+    return tuple(profiles)
 
 
 def _load_tracker(raw) -> Tracker:
@@ -482,6 +594,7 @@ def load_config(path: Path | None = None) -> Config:
         fix=_load_fix(raw.get("fix") or {}, default_model, models),
         tracker=_load_tracker(raw.get("tracker")),
         key_pattern=_load_key_pattern(raw.get("key_pattern")),
+        parse_sources=_load_parse_sources(raw.get("parse")),
     )
     # Validate every repo override eagerly, not just the ones a given run
     # happens to call `for_repo` on: a bad repos: entry should fail at load
