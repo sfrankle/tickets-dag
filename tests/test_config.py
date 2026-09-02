@@ -1,3 +1,4 @@
+import re
 import textwrap
 from pathlib import Path
 
@@ -772,7 +773,9 @@ def test_a_bare_name_two_owners_claim_is_not_inferred(tmp_path):
 def test_a_repo_override_that_is_not_a_mapping_says_so(tmp_path):
     """`ticket config --validate` reports this rather than raising a traceback."""
     broken = TWO_OWNERS.replace("sfrankle/api: {}", "sfrankle/api: nope")
-    with pytest.raises(ConfigError, match="repos.sfrankle/api must be a mapping"):
+    with pytest.raises(
+        ConfigError, match=re.escape("repos.sfrankle/api must be a mapping")
+    ):
         load_config(write(tmp_path, broken))
 
 
