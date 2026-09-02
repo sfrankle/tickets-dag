@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ticket.collect import collect, outstanding
+from ticket.collect import collect, outstanding, set_review
 from ticket.config import load_config
 from ticket.errors import TicketError
 
@@ -590,6 +590,145 @@ def test_recollecting_a_null_review_record_claims_no_slot(cfg, store, fake_bin):
     records = collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_1"])
     assert records[0]["review"] is None
     assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_attributing_a_null_record_by_hand_clears_its_dispatch(store):
+    """The way out of the wedge the two tests above describe.
+    Attribution a re-read must not guess is one a person can read off the review, so `set_review` is where they say it."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    pr = store.read_pr("acme/api#115")
+    set_review(store, pr, "PRR_1", "docs-tests")
+    assert store.read_pr("acme/api#115")["collected"][0]["review"] == "docs-tests"
+    assert outstanding(store.read_pr("acme/api#115")) == "perf"
+
+
+def test_attribution_carries_to_the_findings_that_source_minted(store):
+    """`ticket findings` reads the copy on the finding, so the two would otherwise disagree about where it came from."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    store.write_findings(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "next_id": 3,
+            "findings": [
+                {
+                    "id": "f01",
+                    "status": "open",
+                    "source": {
+                        "kind": "review",
+                        "review": None,
+                        "source_id": "PRR_1",
+                    },
+                },
+                {
+                    "id": "f02",
+                    "status": "open",
+                    "source": {
+                        "kind": "review",
+                        "review": None,
+                        "source_id": "PRR_9",
+                    },
+                },
+            ],
+        }
+    )
+    set_review(store, store.read_pr("acme/api#115"), "PRR_1", "docs-tests")
+    findings = store.read_findings("acme/api#115")["findings"]
+    assert findings[0]["source"]["review"] == "docs-tests"
+    # A different source id is left alone.
+    assert findings[1]["source"]["review"] is None
+
+
+def test_attribution_can_be_taken_back(store):
+    """The other direction: a record that took a slot it should not have gives it back."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": "docs-tests",
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    set_review(store, store.read_pr("acme/api#115"), "PRR_1", None)
+    assert store.read_pr("acme/api#115")["collected"][0]["review"] is None
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_attributing_to_a_review_that_is_fully_collected_is_an_error(store):
+    """Attribution is a slot, and a dispatch has one result. Two records naming one dispatch would make `_uncollected` count a review as answered twice."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": "docs-tests",
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    pr = store.read_pr("acme/api#115")
+    pr["collected"].append(
+        {
+            "source_id": "PRR_2",
+            "review": None,
+            "author": "someone",
+            "at": "t",
+            "findings": ["f02"],
+        }
+    )
+    store.write_pr(pr)
+    with pytest.raises(TicketError, match="already collected"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_2", "docs-tests")
+
+
+def test_attributing_to_an_undispatched_review_is_an_error(store):
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    with pytest.raises(TicketError, match="never dispatched"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_1", "security")
+
+
+def test_attributing_an_uncollected_source_is_an_error(store):
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    with pytest.raises(TicketError, match="has not been collected"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_7", "docs-tests")
 
 
 def test_an_all_clear_review_answers_its_dispatch(cfg, store, fake_bin):

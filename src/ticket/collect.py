@@ -9,6 +9,7 @@ What decides that is the script parser's two empty answers, which do not mean th
 `[]` is a review of ours that found nothing: it ran, it answered its dispatch, and it takes that dispatch's collected slot — an all-clear review claiming no slot would leave its dispatch outstanding forever and wedge `next` on a `collect` that can never clear.
 `None` is a body we could not read as a review at all: it answered nothing, so it claims nothing.
 Attribution is positional — `next_uncollected` in dispatch order, because a dispatch record carries no author to match a body against — and it happens once, on the first read.
+`set_review` is the way back: a body that fell back to Haiku leaves its dispatch uncollected forever, and nothing on disk can say which dispatch that was, so the operator reading the review supplies it.
 
 A source id in `collected` is normally skipped, with two exceptions (issue #10):
 
@@ -25,6 +26,7 @@ It reads what is on the PR at the moment it runs and returns; a review that has 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from . import gh
@@ -82,6 +84,55 @@ def outstanding(pr: dict) -> str | None:
     `collect` does not wait for it — this is what lets a caller say so.
     """
     return next_uncollected(pr)
+
+
+def set_review(store: Store, pr: dict, source_id: str, review_id: str | None) -> dict:
+    """Say by hand which dispatch a collected source answered.
+
+    Attribution is positional and happens once, on the first read, so a body the script parser could not read is recorded with `review: null` and stays that way: which dispatch it answered is not in the record, and a re-read can only ask what is outstanding *now*, which would consume a newer dispatch's slot.
+    That leaves the original dispatch uncollected and `next` asking for a `collect` that can never clear, so the operator — who can read the body — supplies the attribution the record could not keep.
+    `None` is the other direction, for a record that took a slot it should not have.
+    """
+    record = next(
+        (c for c in pr.get("collected") or [] if c.get("source_id") == source_id), None
+    )
+    if record is None:
+        raise TicketError(f"{source_id} has not been collected on {pr['pr']}")
+    if review_id is not None:
+        # Counted, not set: a review is re-dispatched once the head moves, so
+        # the third dispatch of `docs-tests` has a free slot even though two
+        # records already name it. This is `_uncollected`'s arithmetic, asked
+        # about one review.
+        dispatches = sum(
+            1 for d in pr.get("dispatched") or [] if d.get("review") == review_id
+        )
+        if not dispatches:
+            raise TicketError(f"{review_id} was never dispatched on {pr['pr']}")
+        claims = Counter(
+            c.get("review")
+            for c in pr.get("collected") or []
+            if c.get("source_id") != source_id
+        )
+        if claims[review_id] >= dispatches:
+            raise TicketError(
+                f"every dispatch of {review_id} on {pr['pr']} is already collected"
+            )
+    record["review"] = review_id
+    record["attributed_at"] = now()
+    # The findings carry their own copy of the attribution, so leaving those
+    # behind would have `ticket findings` and `ticket reviews` disagree about
+    # where a finding came from.
+    doc = store.read_findings(pr["pr"], pr.get("key"))
+    touched = False
+    for finding in doc["findings"]:
+        source = finding.get("source") or {}
+        if source.get("source_id") == source_id:
+            source["review"] = review_id
+            touched = True
+    if touched:
+        store.write_findings(doc)
+    store.write_pr(pr)
+    return record
 
 
 def collect(

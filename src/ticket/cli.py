@@ -63,6 +63,7 @@ WRITE_VERBS = {
     "fix",
     "decide",
     "effort",
+    "attribute",
     "reset",
     "refresh",
 }
@@ -423,6 +424,31 @@ def cmd_skip(args) -> int:
     return 0
 
 
+def cmd_attribute(args) -> int:
+    """The manual half of issue #23.
+
+    Attribution is positional and happens once, on the first read, so a body the script parser could not read keeps `review: null` and the dispatch it actually answered stays uncollected — which wedges `next` on a `collect` no run can clear.
+    Nothing on disk can recover which dispatch that was; a person reading the review can.
+    """
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+    ticket = load_ticket(ctx, args.key)
+    inner = scoped(ctx, ticket)
+    pr_ref = pick_pr(ticket, args)
+    # `none` rather than a flag: the argument is "which dispatch did this answer", and "none of ours" is one of the answers.
+    review = None if args.review == "none" else args.review
+    if review is not None and review not in {r.id for r in inner.cfg.reviews}:
+        raise TicketError(f"unknown review: {args.review}")
+    pr = inner.store.read_pr(pr_ref, ticket["key"])
+    if not pr:
+        raise TicketError(f"nothing has been collected on {pr_ref} yet")
+    if args.dry_run:
+        print(f"[dry-run] would attribute {args.source} to {args.review}")
+        return 0
+    collect_module.set_review(inner.store, pr, args.source, review)
+    print(f"{args.source}: {args.review}")
+    return 0
+
+
 def cmd_release(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
@@ -491,7 +517,11 @@ def cmd_collect(args) -> int:
     if pending:
         # `outstanding` counts dispatches against collection records carrying that review id, so what it reports is "not collected yet" — true both of a review that has yet to post and of one that posted and was recorded as none of ours.
         # Saying "once it posts" is only true of the first, and for the second running collect again never clears it.
-        print(f"not waiting for {pending}: not collected yet")
+        print(
+            f"not waiting for {pending}: not collected yet."
+            f" Collect again once it posts; if it has posted and was recorded as none of ours,"
+            f" `ticket attribute {args.key} <source-id> {pending}` says so and `ticket skip {pending}` drops it."
+        )
     return 0
 
 
@@ -640,8 +670,11 @@ def cmd_reviews(args) -> int:
         print(f"  {review.id:<16} {review.dispatch:<6} {status}")
     others = [c for c in pr.get("collected") or [] if not c.get("review")]
     for other in others:
+        # The source id, because it is the argument `ticket attribute` takes to
+        # correct one of these lines.
         print(
-            f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings), not ours"
+            f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings),"
+            f" not ours [{other['source_id']}]"
         )
     return 0
 
@@ -968,6 +1001,7 @@ STAGE_VERBS = (
     "fix",
     "decide",
     "effort",
+    "attribute",
     "findings",
     "reviews",
 )
@@ -1107,6 +1141,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("key")
     p.add_argument("finding")
     p.add_argument("value", choices=list(EFFORTS))
+    p.add_argument("--pr")
+    p.add_argument("--dry-run", action="store_true")
+
+    p = add(
+        "attribute",
+        cmd_attribute,
+        help="say which dispatch a collected source answered",
+    )
+    p.add_argument("key")
+    p.add_argument("source", help="the source id `ticket reviews` prints")
+    p.add_argument("review", help="a review id, or `none` for not one of ours")
     p.add_argument("--pr")
     p.add_argument("--dry-run", action="store_true")
 

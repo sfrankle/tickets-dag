@@ -80,6 +80,7 @@ ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
 ticket fix ABC-123 --no-wait      # hand it off without waiting for the commit
 ticket effort ABC-123 f02 hard    # override how a finding gets fixed
+ticket attribute ABC-123 5049842015 docs-tests   # say which dispatch a source answered
 ticket decide ABC-123 f03 "covered by ABC-140"
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 ```
@@ -195,14 +196,25 @@ A profile is validated at load under the same flags it runs under, and `examples
 The example review prompts under `examples/input/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
 
 **`collect` does not wait, and a source can be read again.**
-It reads what is on the PR at the moment it runs and returns; a dispatched review that has not posted yet is named in the output as still outstanding, and you run `collect` again once it lands.
+It reads what is on the PR at the moment it runs and returns; a dispatched review whose result has not been recorded is named in the output as still outstanding.
+That covers two cases, and only one of them clears itself: a review that has not posted yet lands when you run `collect` again, while one that posted in a form the script parser could not read was recorded as none of ours and no number of `collect` runs will attach it to its dispatch.
+`ticket attribute KEY <source-id> <review>` is the second case's remedy — see below — and `ticket skip <review>` is the way to drop the dispatch instead.
 A collected source is normally skipped on the next run, with two exceptions.
 A source that produced no findings is re-parsed every time, for free — the re-parse stops at the script parser and never falls back to Haiku — so a parser that has since learned to read that body recovers findings that were previously stranded behind their own source id.
 `ticket collect KEY --recollect <source-id>` (repeatable) forces a full re-read of a named source, Haiku included, which is the case a source that already produced findings needs.
+A re-read recovers findings; it does not re-decide attribution.
+Which dispatch a source answered is settled on the first read and kept from then on, `null` included — a record that claimed nothing stays null through a forced re-read, because attribution is positional and the record did not keep the position, so asking again would hand back whatever is outstanding *now* and consume a dispatch that body cannot have answered.
 Neither can duplicate anything: a re-read is deduplicated against the findings already open on the PR, and it updates the source's existing collection record rather than adding a second one.
 That record carries a `reread_at` alongside its original `at`, so the first read and the last re-read of a source are both still readable.
 A re-read that recovers nothing is not recorded as work at all: it prints nothing and rewrites nothing, because a record left empty is exactly the record that gets re-read again next run.
 `--recollect` naming a source that is not on the PR is an error and exits non-zero — the sources that were there are still collected first.
+
+**Attribution the machine cannot recover, you can supply.**
+`ticket attribute KEY <source-id> <review>` writes the attribution a first read could not make, which is what unsticks a `docs-tests` dispatch answered by a body that fell back to Haiku: without it that dispatch is uncollected forever and `next` keeps asking for a `collect` that can never clear.
+`ticket reviews KEY` prints the source id of every record collected as none of ours, in brackets on its line, because that id is the argument this takes.
+`none` in place of a review id is the other direction, for a record that took a slot it should not have.
+The change reaches the findings that source minted as well as the collection record, so `ticket findings` and `ticket reviews` do not end up disagreeing about where a finding came from.
+A review is a slot per dispatch: attributing to one whose dispatches are all collected is an error, as is naming a review that was never dispatched on the PR.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI and a dispatched `bot` review rides a Claude GitHub bot's `/review` comment protocol; there is no forge abstraction and none is planned.
 How an `easy` finding gets fixed is not part of that contract — it is the script `fix.easy.run` names.
