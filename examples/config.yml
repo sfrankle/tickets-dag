@@ -156,12 +156,38 @@ reviews:
     model: opus
     prompt: input/prompts/reviews/security.md
 
+# Optional. The account a bare repo name belongs to on this machine, so
+# `ticket track ABC-1 --repo api` means `acme/api`. Unset means every repo is
+# written out in full.
+owner: acme
+
 # Shallow overrides. `reviews:` replaces the list; `steps.skip:` subtracts.
+# `aliases:` are the other names a repo goes by — what people type after
+# `--repo`, and what `infer:` below looks for in a ticket summary.
 repos:
   acme/api:
     path: ~/code/api          # the clone worktrees are added from
+    aliases: [API]
     reviews: [correctness]
   acme/infra:
     path: ~/code/infra
+    aliases: [INFRA]
     steps:
       skip: [describe]
+
+# Optional. How `ticket track KEY` works out which repo a ticket is about when
+# no `--repo` is given, so a key is all you have to type.
+#
+# Patterns are matched against the ticket summary, in order, and everything
+# outside a placeholder is matched literally — `[` is a bracket, not a
+# character class. `{alias}` stands for any alias above and `{repo}` for any
+# repo name, so `[API] harden the token check` finds `acme/api`.
+#
+# Nothing is guessed: a summary naming two repos, or none, leaves the repo
+# unset and `track` says so rather than picking one. Omit the block and
+# `track` never infers.
+infer:
+  repo:
+    patterns:
+      - "[{alias}]"
+      - "[{repo}]"
