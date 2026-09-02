@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import gh
 from .config import Config, Step
+from .resolve import active_pr
 from .store import Store, now
 
 PR_LINE = re.compile(r"^ticket-pr:\s*(\S+/\S+#\d+)\s*$", re.MULTILINE)
@@ -56,9 +57,11 @@ def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
     repo_path = cfg.repo_path(repo)
     if repo_path:
         env["TICKET_REPO_PATH"] = str(repo_path)
-    prs = ticket.get("prs") or []
-    if prs:
-        env["TICKET_PR"] = prs[-1]
+    # The selected PR, not the newest: a script asked to comment on "the" PR
+    # must mean the one every verb is working on.
+    pr_ref = active_pr(ticket)
+    if pr_ref:
+        env["TICKET_PR"] = pr_ref
     return env
 
 

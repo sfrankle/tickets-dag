@@ -756,7 +756,11 @@ def test_collect_recollect_of_an_unknown_source_exits_non_zero(env, fake_bin, ca
 
 
 def test_next_does_not_count_a_re_read_as_a_new_source(env, fake_bin, capsys):
-    """`ticket next` runs the same collect, and a re-read is an old source read again."""
+    """`ticket next` runs the same collect, and a re-read is an old source read again.
+
+    It reports it in the same words, too: `next` forwards to `run_collect`
+    rather than summarising the same records itself.
+    """
     started(fake_bin)
     main(["review", "ABC-123"])
     one_review(fake_bin, body_file="human-comment.md")
@@ -766,8 +770,9 @@ def test_next_does_not_count_a_re_read_as_a_new_source(env, fake_bin, capsys):
     capsys.readouterr()
     assert main(["next", "ABC-123"]) == 0
     out = capsys.readouterr().out
-    assert "collected 0 new sources" not in out
-    assert "re-read 1" in out
+    lines = out.splitlines()
+    assert any(line.startswith("re-read ") for line in lines)
+    assert not any(line.startswith("collected ") for line in lines)
 
 
 def test_open_takes_a_pr_like_every_other_verb(env, fake_bin):
@@ -801,3 +806,158 @@ def test_open_names_the_prs_it_knows_when_the_flag_misses(env, fake_bin, capsys)
     started(fake_bin)
     assert main(["open", "ABC-123", "--pr", "999"]) == 1
     assert "acme/api#115" in capsys.readouterr().err
+
+
+def _register_second_pr(env, ref="acme/api#131"):
+    """A second PR on one key, the way a re-run of a PR-registering step leaves it."""
+    from ticket.store import Store
+
+    store = Store(env / "store")
+    ticket = store.read_ticket("ABC-123")
+    ticket["prs"].append(ref)
+    store.write_ticket(ticket)
+    return store
+
+
+def test_pr_selection_persists_into_later_commands(env, fake_bin, capsys):
+    """`--pr` is a selection, not a one-shot override: it moves the pointer and the next bare command is still there."""
+    started(fake_bin)
+    store = _register_second_pr(env)
+    store.add_findings("acme/api#115", [_easy("on the older PR")])
+    capsys.readouterr()
+
+    assert main(["findings", "ABC-123", "--pr", "115"]) == 0
+    assert "on the older PR" in capsys.readouterr().out
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#115"
+
+    main(["ABC-123"])
+    out = capsys.readouterr().out
+    assert "acme/api#115" in out
+    assert "1 open" in out
+
+
+def test_pr_selection_moves_back_to_the_newest_when_asked(env, fake_bin, capsys):
+    started(fake_bin)
+    store = _register_second_pr(env)
+    main(["findings", "ABC-123", "--pr", "115"])
+    assert main(["findings", "ABC-123", "--pr", "131"]) == 0
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
+
+
+def test_a_dry_run_resolves_a_pr_without_moving_the_pointer(env, fake_bin, capsys):
+    """Asking what would happen must not change what happens next."""
+    started(fake_bin)
+    store = _register_second_pr(env)
+    _seed_findings(env, _easy("first"))
+    capsys.readouterr()
+    assert main(["fix", "ABC-123", "f01", "--pr", "115", "--dry-run"]) == 0
+    assert "[dry-run] would run" in capsys.readouterr().out
+    assert store.read_ticket("ABC-123").get("active") is None
+
+
+def test_next_acts_on_the_selected_pr(env, fake_bin, monkeypatch, capsys):
+    """The resolver drove `prs[-1]` and nothing else, so an open finding on an
+    older PR was invisible to `next` forever once a newer one was registered."""
+    from ticket import cli
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", lambda *a, **kw: "bbb")
+    started(fake_bin)
+    store = _register_second_pr(env)
+    store.add_findings("acme/api#115", [_easy("on the older PR")])
+    capsys.readouterr()
+
+    # The newest PR has had no review dispatched, so that is what `next` sees.
+    main(["ABC-123"])
+    assert "next: review docs-tests" in capsys.readouterr().out
+
+    # Pointed at the older one, it sees that PR's open finding instead.
+    assert main(["next", "ABC-123", "--pr", "115", "--dry-run"]) == 0
+    assert "[dry-run] would run" in capsys.readouterr().out
+    assert store.read_ticket("ABC-123").get("active") is None
+
+    assert main(["next", "ABC-123", "--pr", "115"]) == 0
+    assert "fixer took f01" in capsys.readouterr().out
+
+
+def test_next_waits_for_the_fixer_exactly_as_fix_does(
+    env, fake_bin, monkeypatch, capsys
+):
+    """Issue #23.2: `next`'s fix branch handed the finding off and returned, so
+    it reported `open` for a finding that landed seconds later."""
+    from ticket import cli
+
+    started(fake_bin)
+    _seed_findings(env, _easy("first"))
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "aaa"}))
+
+    order = []
+    monkeypatch.setattr(
+        cli.fix_module,
+        "wait_for_head",
+        lambda pr_ref, before, **kw: (order.append("wait"), "bbb")[1],
+    )
+    real_tee = cli.steps_module.tee
+
+    def spy_tee(argv, **kwargs):
+        order.append("handoff")
+        return real_tee(argv, **kwargs)
+
+    monkeypatch.setattr(cli.steps_module, "tee", spy_tee)
+    capsys.readouterr()
+
+    assert main(["next", "ABC-123"]) == 0
+    assert order == ["handoff", "wait"]
+    from ticket.store import Store
+
+    assert Store(env / "store").read_pr("acme/api#115")["head"] == "bbb"
+
+
+def test_next_takes_no_wait_like_fix(env, fake_bin, monkeypatch, capsys):
+    from ticket import cli
+
+    started(fake_bin)
+    _seed_findings(env, _easy("first"))
+
+    def fail_wait(*a, **kw):
+        raise AssertionError("waited despite --no-wait")
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", fail_wait)
+    capsys.readouterr()
+    assert main(["next", "ABC-123", "--no-wait"]) == 0
+    assert "not waiting (--no-wait)" in capsys.readouterr().out
+
+
+def test_next_does_not_wait_on_a_hard_finding(env, fake_bin, monkeypatch):
+    from ticket import cli
+
+    started(fake_bin)
+    _seed_findings(env, {"summary": "retry loop", "effort": "hard"})
+
+    def fail_wait(*a, **kw):
+        raise AssertionError("waited on a hard fix")
+
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", fail_wait)
+    assert main(["next", "ABC-123"]) == 0
+
+
+def test_next_refuses_a_finding_already_with_the_fixer(
+    env, fake_bin, monkeypatch, capsys
+):
+    """`next` shares `fix`'s in-flight guard because it shares its code."""
+    from ticket import cli
+
+    started(fake_bin)
+    _seed_findings(env, _easy("first"))
+    monkeypatch.setattr(cli.fix_module, "wait_for_head", lambda *a, **kw: "bbb")
+    assert main(["fix", "ABC-123", "--no-wait"]) == 0
+    capsys.readouterr()
+    assert main(["next", "ABC-123"]) == 1
+    assert "was handed to the easy fixer" in capsys.readouterr().err
+
+
+def test_next_answers_a_pr_flag_on_a_ticket_with_no_pr(env, fake_bin, capsys):
+    """Silently ignoring it would run the next step while looking like it had
+    been pointed somewhere."""
+    main(["track", "ABC-123", "--repo", "acme/api"])
+    assert main(["next", "ABC-123", "--pr", "115"]) == 1
+    assert "has no PR yet" in capsys.readouterr().err

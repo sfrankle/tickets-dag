@@ -35,8 +35,25 @@ class Action:
 
 
 def active_pr(ticket: dict) -> str | None:
+    """The PR every PR-shaped rule and verb acts on.
+
+    A key can carry several PRs, and which one is being worked is a selection
+    the person makes rather than something the store can derive: nothing here
+    records whether a PR is open, merged or abandoned. `--pr` on any verb moves
+    this pointer and it stays moved, so `next` never has to guess and never
+    scans.
+
+    The newest registration is the default, which is what every ticket written
+    before the pointer existed means. A pointer at a ref the ticket no longer
+    claims is stale rather than authoritative: `reset` and a hand-edited state
+    file both produce one, and resolving against it would read findings no verb
+    could reach.
+    """
     prs = ticket.get("prs") or []
-    return prs[-1] if prs else None
+    if not prs:
+        return None
+    selected = ticket.get("active")
+    return selected if selected in prs else prs[-1]
 
 
 def orphan_steps(cfg: Config, ticket: dict) -> list[str]:
