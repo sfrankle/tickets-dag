@@ -216,24 +216,32 @@ def pick_pr(ctx: Context, ticket: dict, args) -> str:
     selected = matches[0]
     if not getattr(args, "dry_run", False) and ticket.get("active") != selected:
         ticket["active"] = selected
-        _defer_selection(ctx.store, ticket)
+        _selection.defer(ctx.store, ticket)
     return selected
 
 
-# A `--pr` pointer move, held until the verb it was given to has returned
-# cleanly. Module level because `main` is the only place that knows the verb
-# succeeded, and it has no access to the command's `Context`.
-_pending_selection: tuple[Store, dict] | None = None
+class _PendingSelection:
+    """A `--pr` pointer move, held until the verb it was given to has returned
+    cleanly. Module level because `main` is the only place that knows the verb
+    succeeded, and it has no access to the command's `Context`.
+    """
+
+    def __init__(self) -> None:
+        self.move: tuple[Store, dict] | None = None
+
+    def defer(self, store: Store, ticket: dict) -> None:
+        self.move = (store, ticket)
+
+    def clear(self) -> None:
+        self.move = None
+
+    def take(self) -> tuple[Store, dict] | None:
+        """The held move, if any, leaving nothing behind for the next call."""
+        move, self.move = self.move, None
+        return move
 
 
-def _defer_selection(store: Store, ticket: dict) -> None:
-    global _pending_selection
-    _pending_selection = (store, ticket)
-
-
-def _clear_selection() -> None:
-    global _pending_selection
-    _pending_selection = None
+_selection = _PendingSelection()
 
 
 def _commit_selection(*, locked: bool) -> None:
@@ -244,8 +252,7 @@ def _commit_selection(*, locked: bool) -> None:
     lock here — for the length of one write, rather than across a whole
     command someone is running precisely because a fix is holding it.
     """
-    global _pending_selection
-    pending, _pending_selection = _pending_selection, None
+    pending = _selection.take()
     if pending is None:
         return
     store, ticket = pending
@@ -1436,7 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
         # would stop `ticket findings` being readable while a fix runs, which
         # is exactly when someone wants to read them.
         # A stale move from an earlier in-process call is not this one's.
-        _clear_selection()
+        _selection.clear()
         writing = args.verb in WRITE_VERBS
         if writing and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
