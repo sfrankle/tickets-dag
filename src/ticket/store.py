@@ -47,6 +47,18 @@ def now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _relative(root: Path, path: Path) -> str:
+    """How the store names a path: relative to its root, absolute if it falls outside.
+
+    A free function, not a method: the migration names paths before there is a `Store` to ask.
+    """
+    path = Path(path)
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = Path(root).expanduser()
@@ -65,13 +77,7 @@ class Store:
 
         A PR is addressed by its ref alone, so the key is recovered: from a file already on disk, else from the ticket that registered the PR, else `_unkeyed` — a PR document is never dropped for want of a key.
         """
-        slug = pr_slug(pr_ref)
-        tickets = self.root / "tickets"
-        for name in (f"{slug}.json", f"{slug}_findings.json"):
-            existing = next(iter(sorted(tickets.glob(f"*/{name}"))), None)
-            if existing:
-                return existing.parent.name
-        return _key_of_pr(tickets, pr_ref) or UNKEYED
+        return _key_of_pr(self.root / "tickets", pr_ref) or UNKEYED
 
     def _pr_file(self, pr_ref: str, key: str | None = None) -> Path:
         key = key or self._key_for_pr(pr_ref)
@@ -104,11 +110,7 @@ class Store:
         Recorded absolute, a log path stops resolving as soon as the store moves, and nothing re-checks it (issue #7).
         A path outside the root is returned absolute, since there is nothing to record it relative to; every log the store itself writes is inside.
         """
-        path = Path(path)
-        try:
-            return path.relative_to(self.root).as_posix()
-        except ValueError:
-            return path.as_posix()
+        return _relative(self.root, path)
 
     def log_file(self, recorded: str | None) -> Path | None:
         """The file a recorded log path names, new-style or old-style."""
@@ -117,16 +119,24 @@ class Store:
         path = Path(recorded)
         return path if path.is_absolute() else self.root / path
 
+    def log_missing(self, recorded: str | None) -> bool:
+        """Whether a step names a log that is not there.
+
+        A recorded path can outlive its file — a moved store, a hand-rename, a cleaned-out directory.
+        Recording nothing is not missing: the step simply never wrote one.
+        """
+        path = self.log_file(recorded)
+        return path is not None and not path.is_file()
+
     def read_log(self, recorded: str | None) -> str:
         """A step's log, or a sentence saying why there isn't one.
 
-        A recorded path can outlive its file — a moved store, a hand-rename, a cleaned-out directory.
-        That is worth saying plainly, not raising over.
+        A path that has outlived its file is worth saying plainly, not raising over.
         """
         path = self.log_file(recorded)
         if path is None:
             return "no log recorded for this step"
-        if not path.is_file():
+        if self.log_missing(recorded):
             return f"no log file at {path}: it was moved, renamed or deleted"
         return path.read_text()
 
@@ -174,8 +184,9 @@ class Store:
 
     # --- prs -----------------------------------------------------------
 
-    def read_pr(self, pr_ref: str) -> dict | None:
-        return self._read(self._pr_file(pr_ref))
+    def read_pr(self, pr_ref: str, key: str | None = None) -> dict | None:
+        # `key` when the caller holds the ticket: it saves the walk over `tickets/` that placing the PR otherwise needs.
+        return self._read(self._pr_file(pr_ref, key))
 
     def write_pr(self, data: dict) -> None:
         # The document names its ticket, so a first write does not have to guess where it goes.
@@ -272,13 +283,6 @@ def _needs_migration(root: Path) -> bool:
     return any((root / "tickets").glob("*.json"))
 
 
-def _where(root: Path, path: Path) -> str:
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return str(path)
-
-
 def migrate(root: Path) -> None:
     """Move a type-grouped store into the by-key layout, in place.
 
@@ -306,7 +310,7 @@ def migrate(root: Path) -> None:
             moved += 1
             return True
         left.append(
-            f"{_where(root, source)} not moved: {_where(root, destination)} already exists"
+            f"{_relative(root, source)} not moved: {_relative(root, destination)} already exists"
         )
         return False
 
@@ -314,44 +318,39 @@ def migrate(root: Path) -> None:
     for path in sorted(tickets.glob("*.json")):
         claim(path, tickets / path.stem / "state.json")
 
-    for path in sorted((root / "prs").glob("*.json")):
-        doc = _load(path)
-        if doc is None:
-            left.append(
-                f"{_where(root, path)} left in place: not a readable JSON object"
-            )
-            continue
-        key = doc.get("key") or UNKEYED
-        name = f"{pr_slug(doc['pr'])}.json" if doc.get("pr") else path.name
-        if claim(path, tickets / key / name) and key == UNKEYED:
-            left.append(
-                f"{_where(root, path)} names no ticket: filed under tickets/{UNKEYED}/"
-            )
+    def place(directory: str, suffix: str, key_of) -> None:
+        """File one old directory of PR-addressed documents under the tickets that own them.
 
-    for path in sorted((root / "findings").glob("*.json")):
-        doc = _load(path)
-        if doc is None:
-            left.append(
-                f"{_where(root, path)} left in place: not a readable JSON object"
-            )
-            continue
-        key = _key_of_pr(tickets, doc.get("pr")) or UNKEYED
-        name = f"{pr_slug(doc['pr'])}_findings.json" if doc.get("pr") else path.name
-        if claim(path, tickets / key / name) and key == UNKEYED:
-            left.append(
-                f"{_where(root, path)} names no ticket: filed under tickets/{UNKEYED}/"
-            )
+        A document that names no PR keeps its old filename: it is not one of ours to rename, and the point is to lose nothing.
+        """
+        for path in sorted((root / directory).glob("*.json")):
+            doc = _load(path)
+            if doc is None:
+                left.append(
+                    f"{_relative(root, path)} left in place: not a readable JSON object"
+                )
+                continue
+            key = key_of(doc) or UNKEYED
+            name = f"{pr_slug(doc['pr'])}{suffix}.json" if doc.get("pr") else path.name
+            if claim(path, tickets / key / name) and key == UNKEYED:
+                left.append(
+                    f"{_relative(root, path)} names no ticket: filed under tickets/{UNKEYED}/"
+                )
+
+    # The PR document carries its key; a findings document only names its PR, so its ticket is the one that already holds that PR.
+    place("prs", "", lambda doc: doc.get("key"))
+    place("findings", "_findings", lambda doc: _key_of_pr(tickets, doc.get("pr")))
 
     placed_logs: set[tuple[str, str]] = set()
     for entry in sorted((root / "logs").glob("*")):
         if not entry.is_dir():
             left.append(
-                f"{_where(root, entry)} left in place: not a ticket's log directory"
+                f"{_relative(root, entry)} left in place: not a ticket's log directory"
             )
             continue
         for path in sorted(entry.iterdir()):
             if not path.is_file():
-                left.append(f"{_where(root, path)} left in place: not a log file")
+                left.append(f"{_relative(root, path)} left in place: not a log file")
                 continue
             if claim(path, tickets / entry.name / "logs" / path.name):
                 placed_logs.add((entry.name, path.name))
@@ -371,12 +370,17 @@ def migrate(root: Path) -> None:
 
 
 def _key_of_pr(tickets: Path, pr_ref: str | None) -> str | None:
-    """The key whose directory already holds this PR, or which registered it."""
+    """The key whose directory already holds this PR, or which registered it.
+
+    Either of the PR's two documents answers it: a store half-migrated by hand can have the findings without the PR.
+    """
     if not pr_ref:
         return None
-    placed = next(iter(sorted(tickets.glob(f"*/{pr_slug(pr_ref)}.json"))), None)
-    if placed:
-        return placed.parent.name
+    slug = pr_slug(pr_ref)
+    for name in (f"{slug}.json", f"{slug}_findings.json"):
+        placed = next(iter(sorted(tickets.glob(f"*/{name}"))), None)
+        if placed:
+            return placed.parent.name
     for path in sorted(tickets.glob("*/state.json")):
         doc = _load(path)
         if doc and pr_ref in (doc.get("prs") or []):
@@ -415,7 +419,7 @@ def _prune(directory: Path) -> None:
     """Remove the old directory once everything in it has been placed."""
     if not directory.is_dir():
         return
-    for child in sorted(directory.iterdir(), reverse=True):
+    for child in directory.iterdir():
         if child.is_dir():
             _prune(child)
     if not any(directory.iterdir()):

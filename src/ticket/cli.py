@@ -95,7 +95,7 @@ def resolve_for(ctx: Context, ticket: dict) -> Action:
     pr_ref = active_pr(ticket)
     # A missing PR document reads as an empty one: it is only written on the
     # first dispatch, and the first review is due before that.
-    pr = (ctx.store.read_pr(pr_ref) or {}) if pr_ref else None
+    pr = (ctx.store.read_pr(pr_ref, ticket["key"]) or {}) if pr_ref else None
     findings = ctx.store.read_findings(pr_ref, ticket["key"]) if pr_ref else None
     return next_action(ctx.cfg, ticket, pr, findings)
 
@@ -151,9 +151,8 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
         print(f"PR: {row['pr']}{findings}")
     for step in scoped(ctx, ticket).cfg.steps:
         record = (ticket.get("steps") or {}).get(step.id) or {}
-        log = ctx.store.log_file(record.get("log"))
         # A recorded path can outlive its file; say so here rather than let whatever goes to read it fall over.
-        missing = "  (log missing)" if log and not log.is_file() else ""
+        missing = "  (log missing)" if ctx.store.log_missing(record.get("log")) else ""
         print(f"  {step.id:<16} {record.get('status', '-')}{missing}")
     print(
         f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"
@@ -341,7 +340,7 @@ def cmd_skip(args) -> int:
         raise TicketError(
             f"{args.key} has no PR yet, so review {args.step} cannot be skipped"
         )
-    pr = inner.store.read_pr(pr_ref) or {
+    pr = inner.store.read_pr(pr_ref, ticket["key"]) or {
         "pr": pr_ref,
         "key": args.key,
         "dispatched": [],
@@ -518,7 +517,7 @@ def cmd_reviews(args) -> int:
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
-    pr = inner.store.read_pr(pr_ref) or reviews_module.ensure_pr(
+    pr = inner.store.read_pr(pr_ref, ticket["key"]) or reviews_module.ensure_pr(
         inner.store, ticket, pr_ref
     )
     if args.json:
