@@ -1,0 +1,205 @@
+"""`ticket track KEY` with no `--repo`: work the repo out, or say what is missing.
+
+Issue #8: "`ticket track <jira-key>` errors needing a repo. Not always 1-1
+jira-pr; not sure about repo being required." The tracker here is a real
+binary on PATH, because the whole point is that the engine only knows how to
+run one — `fake_tracker` is what it answers with.
+"""
+
+import json
+import textwrap
+
+import pytest
+
+from ticket.cli import main
+from ticket.store import Store
+
+CONFIG = textwrap.dedent("""
+    models: {opus: claude-opus-5}
+    defaults: {model: opus}
+
+    owner: sfrankle
+
+    tracker:
+      summary: [faketracker, issue, view, "{key}"]
+
+    steps:
+      - id: evaluate
+        prompt: prompts/evaluate.md
+
+    repos:
+      sfrankle/content-security-mode:
+        aliases: [CSM]
+        steps:
+          skip: [evaluate]
+      sfrankle/tickets-dag:
+        aliases: [DAG]
+
+    infer:
+      repo:
+        patterns:
+          - "[{alias}]"
+          - "[{repo}]"
+""")
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch, fake_tracker):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "evaluate.md").write_text("Evaluate.\n")
+    config = tmp_path / "config.yml"
+    config.write_text(CONFIG)
+    monkeypatch.setenv("TICKET_CONFIG", str(config))
+    monkeypatch.setenv("TICKET_STORE", str(tmp_path / "store"))
+    return tmp_path
+
+
+def row(env, key: str) -> dict:
+    return Store(env / "store").read_ticket(key)
+
+
+def test_track_needs_no_repo(env, fake_tracker):
+    fake_tracker("[CSM] tighten the session cookie\n")
+    assert main(["track", "ABC-123"]) == 0
+
+
+def test_the_repo_comes_from_the_summary(env, fake_tracker):
+    fake_tracker("[CSM] tighten the session cookie\n")
+    main(["track", "ABC-123"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/content-security-mode"
+
+
+def test_the_summary_is_recorded_too(env, fake_tracker):
+    fake_tracker("[CSM] tighten the session cookie\n")
+    main(["track", "ABC-123"])
+    assert row(env, "ABC-123")["summary"] == "[CSM] tighten the session cookie"
+
+
+def test_an_explicit_repo_beats_inference(env, fake_tracker):
+    fake_tracker("[CSM] tighten the session cookie\n")
+    main(["track", "ABC-123", "--repo", "sfrankle/tickets-dag"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_an_explicit_repo_may_be_an_alias(env):
+    main(["track", "ABC-123", "--repo", "DAG"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_an_explicit_bare_repo_gains_the_owner(env):
+    main(["track", "ABC-123", "--repo", "tickets-dag"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_an_unresolved_repo_still_tracks_the_ticket(env, fake_tracker, capsys):
+    fake_tracker("nothing here names a repo\n")
+    assert main(["track", "ABC-123"]) == 0
+    capsys.readouterr()
+    assert row(env, "ABC-123")["tracked"] is True
+
+
+def test_an_unresolved_repo_warns_and_says_why(env, fake_tracker, capsys):
+    fake_tracker("nothing here names a repo\n")
+    main(["track", "ABC-123"])
+    err = capsys.readouterr().err
+    assert "warning" in err.lower()
+    assert "no repo named in the summary" in err
+
+
+def test_an_unresolved_repo_names_the_way_out(env, fake_tracker, capsys):
+    """A warning that does not say what to type is a warning you ignore."""
+    fake_tracker("nothing here names a repo\n")
+    main(["track", "ABC-123"])
+    assert "ticket track ABC-123 --repo" in capsys.readouterr().err
+
+
+def test_an_ambiguous_summary_is_not_guessed(env, fake_tracker, capsys):
+    fake_tracker("[CSM] and [DAG] both\n")
+    main(["track", "ABC-123"])
+    err = capsys.readouterr().err
+    assert "sfrankle/content-security-mode" in err
+    assert "sfrankle/tickets-dag" in err
+    assert row(env, "ABC-123").get("repo", "") == ""
+
+
+def test_a_later_track_fills_in_the_repo_it_could_not_infer(env, fake_tracker):
+    fake_tracker("nothing here names a repo\n")
+    main(["track", "ABC-123"])
+    main(["track", "ABC-123", "--repo", "CSM"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/content-security-mode"
+
+
+def test_inference_does_not_overwrite_a_repo_already_recorded(env, fake_tracker):
+    """Re-tracking must not move a ticket someone pointed at a repo by hand."""
+    main(["track", "ABC-123", "--repo", "DAG"])
+    fake_tracker("[CSM] retitled later\n")
+    main(["track", "ABC-123"])
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_the_json_row_carries_the_inferred_repo(env, fake_tracker, capsys):
+    fake_tracker("[CSM] tighten the session cookie\n")
+    main(["track", "ABC-123"])
+    capsys.readouterr()
+    main(["show", "ABC-123", "--json"])
+    assert json.loads(capsys.readouterr().out)["repo"] == (
+        "sfrankle/content-security-mode"
+    )
+
+
+def test_config_shows_the_owner(env, capsys):
+    main(["config"])
+    assert "owner: sfrankle" in capsys.readouterr().out
+
+
+def test_config_shows_each_repo_with_its_aliases(env, capsys):
+    main(["config"])
+    out = capsys.readouterr().out
+    assert "sfrankle/content-security-mode (CSM)" in out
+
+
+def test_config_shows_the_infer_patterns(env, capsys):
+    main(["config"])
+    assert "infer.repo: 2 pattern" in capsys.readouterr().out
+
+
+def test_config_json_carries_the_owner_and_aliases(env, capsys):
+    main(["config", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["owner"] == "sfrankle"
+    assert data["repos"]["sfrankle/tickets-dag"]["aliases"] == ["DAG"]
+
+
+def test_a_tracker_that_fails_still_tracks_the_ticket(env, fake_tracker, capsys):
+    """A row with no repo beats no row: failing here would strand it unwritten."""
+    fake_tracker(exit_code=1)
+    assert main(["track", "ABC-123"]) == 0
+    capsys.readouterr()
+    assert row(env, "ABC-123")["tracked"] is True
+
+
+def test_a_tracker_that_fails_says_so(env, fake_tracker, capsys):
+    fake_tracker(exit_code=1)
+    main(["track", "ABC-123"])
+    err = capsys.readouterr().err
+    assert "tracker" in err
+    assert "ticket track ABC-123 --repo" in err
+
+
+def test_a_repo_already_recorded_does_not_ask_the_tracker(env, fake_tracker):
+    """The guess would be discarded, so the round trip buys nothing."""
+    main(["track", "ABC-123", "--repo", "DAG"])
+    fake_tracker(exit_code=1)
+    assert main(["track", "ABC-123"]) == 0
+    assert row(env, "ABC-123")["repo"] == "sfrankle/tickets-dag"
+
+
+def test_stages_resolves_an_alias_in_its_own_repo_flag(env, capsys):
+    """`--repo CSM` has to mean the same thing to every verb that takes it."""
+    main(["stages", "--repo", "CSM"])
+    assert "(none)" in capsys.readouterr().out
+
+
+def test_config_resolves_an_alias_in_its_own_repo_flag(env, capsys):
+    main(["config", "--repo", "CSM"])
+    assert "evaluate" not in capsys.readouterr().out

@@ -9,7 +9,9 @@ dependencies = ["PyYAML>=6.0"]
 ticket = "ticket.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+# ruff is pinned exactly, matching the version .github/workflows/ci.yml runs,
+# so local lint and CI lint cannot disagree.
+dev = ["pytest>=8.0", "ruff==0.16.5"]
 
 [build-system]
 requires = ["hatchling"]

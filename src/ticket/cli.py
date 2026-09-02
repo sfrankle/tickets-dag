@@ -28,9 +28,9 @@ from . import fix as fix_module
 from . import gh
 from . import reviews as reviews_module
 from . import steps as steps_module
-from .config import Config, config_path, load_config
+from .config import Config, RepoGuess, config_path, load_config
 from .effort import EFFORTS
-from .errors import TicketError
+from .errors import GhError, TicketError
 from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
 from .store import Store, now
 
@@ -202,6 +202,41 @@ def downstream(cfg: Config, step_id: str) -> list[str]:
 # --- commands -------------------------------------------------------------
 
 
+def fetch_summary(ctx: Context, key: str, *, dry_run: bool = False) -> str | None:
+    """Ask the configured tracker for this ticket's title, or `None` if it cannot.
+
+    No tracker configured, or one whose CLI is not installed on this machine, is the ordinary case rather than an error: the summary is a convenience, and both callers have a job to finish without it.
+    Persisting is the caller's, so neither of them writes the row twice.
+    """
+    argv = ctx.cfg.tracker.summary_argv(key)
+    if not argv or not shutil.which(argv[0]):
+        return None
+    if dry_run:
+        print(f"[dry-run] would refresh {key} summary from {argv[0]}")
+        return None
+    summary = gh.run(argv, retries=1)
+    return summary.strip().splitlines()[0] if summary.strip() else ""
+
+
+def _guess_repo(ctx: Context, ticket: dict) -> RepoGuess:
+    """Which repo a ticket is about, read out of its summary.
+
+    The summary is what inference reads, so it is fetched here rather than left to `refresh` (issue #8: the fact that repairs the ticket must not be gated on the ticket being repaired).
+    A config with no patterns has already lost the guess, so it does not pay for the round trip; and a tracker that cannot answer — offline, no VPN, a key it has never heard of — costs the guess, not the row.
+    The fetched summary is recorded on `ticket` for the caller to persist along with whatever it makes of the guess.
+    """
+    if not ctx.cfg.inference.patterns:
+        return ctx.cfg.infer_repo(ticket["summary"])
+    try:
+        summary = fetch_summary(ctx, ticket["key"])
+    except GhError as exc:
+        print(f"warning: {exc}", file=sys.stderr)
+        return RepoGuess(None, "the tracker did not answer")
+    if summary is not None:
+        ticket["summary"] = summary
+    return ctx.cfg.infer_repo(ticket["summary"])
+
+
 def cmd_track(args) -> int:
     key = args.key  # `main` has already refused a key that is not path-safe
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
@@ -209,11 +244,28 @@ def cmd_track(args) -> int:
     if pattern and not re.match(pattern, key):
         raise TicketError(f"{key!r} does not match key_pattern {pattern!r}")
     ticket = ctx.store.read_ticket(key) or {"key": key, "prs": [], "steps": {}}
-    ticket["repo"] = args.repo
     ticket["tracked"] = True
     ticket.setdefault("summary", "")
+    ticket.setdefault("repo", "")
+
+    guess = RepoGuess(None)
+    if args.repo:
+        ticket["repo"] = ctx.cfg.resolve_repo(args.repo)
+    elif not ticket["repo"]:
+        guess = _guess_repo(ctx, ticket)
+        ticket["repo"] = guess.repo or ""
+
     ctx.store.write_ticket(ticket)
-    print(f"tracking {key} in {args.repo}")
+    if ticket["repo"]:
+        print(f"tracking {key} in {ticket['repo']}")
+        return 0
+    # Not an error: a row with no repo is a ticket you can still `refresh`, retitle or point by hand, and failing here would strand it unwritten.
+    print(f"tracking {key}")
+    print(
+        f"warning: no repo for {key} — {guess.why}. "
+        f"Set one with: ticket track {key} --repo <owner/repo>",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -623,19 +675,10 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
             print(f"[dry-run] would write pr {pr_ref} (head {pr['head']})")
         else:
             ctx.store.write_pr(pr)
-    argv = ctx.cfg.tracker.summary_argv(ticket["key"])
-    # No tracker configured, or one whose CLI is not installed on this machine,
-    # is the ordinary case rather than an error: the summary is a convenience
-    # and the rest of refresh is the point.
-    if argv and shutil.which(argv[0]):
-        if dry_run:
-            print(f"[dry-run] would refresh {ticket['key']} summary from {argv[0]}")
-        else:
-            summary = gh.run(argv, retries=1)
-            ticket["summary"] = (
-                summary.strip().splitlines()[0] if summary.strip() else ""
-            )
-            ctx.store.write_ticket(ticket)
+    summary = fetch_summary(ctx, ticket["key"], dry_run=dry_run)
+    if summary is not None:
+        ticket["summary"] = summary
+        ctx.store.write_ticket(ticket)
 
 
 def cmd_refresh(args) -> int:
@@ -824,7 +867,12 @@ def cmd_config(args) -> int:
                     "reviews": [
                         {"id": r.id, "dispatch": r.dispatch} for r in cfg.reviews
                     ],
-                    "repos": sorted(cfg.repos),
+                    "owner": cfg.owner,
+                    "repos": {
+                        repo: {"aliases": cfg.aliases_for(repo)}
+                        for repo in sorted(cfg.repos)
+                    },
+                    "infer": {"repo": {"patterns": len(cfg.inference.patterns)}},
                 },
                 indent=2,
             )
@@ -844,8 +892,18 @@ def cmd_config(args) -> int:
         print(f"severities: {', '.join(s.id for s in cfg.severities)}")
         print(f"steps: {', '.join(s.id for s in cfg.steps) or '(none)'}")
         print(f"reviews: {', '.join(r.id for r in cfg.reviews) or '(none)'}")
+        if cfg.owner:
+            print(f"owner: {cfg.owner}")
         if cfg.repos:
-            print(f"repos: {', '.join(sorted(cfg.repos))}")
+            # Aliases are shown beside the repo they resolve to, because the question this line answers is "will `--repo CSM` work".
+            named = []
+            for repo in sorted(cfg.repos):
+                aliases = cfg.aliases_for(repo)
+                named.append(f"{repo} ({', '.join(aliases)})" if aliases else repo)
+            print(f"repos: {', '.join(named)}")
+        if cfg.inference.patterns:
+            count = len(cfg.inference.patterns)
+            print(f"infer.repo: {count} pattern{'s' if count > 1 else ''}")
     if problems:
         print(f"invalid: {len(problems)} problem{'s' if len(problems) > 1 else ''}")
         for problem in problems:
@@ -952,7 +1010,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("track", cmd_track, help="start driving an untracked row")
     p.add_argument("key")
-    p.add_argument("--repo", required=True, help="owner/repo")
+    p.add_argument(
+        "--repo",
+        help="owner/repo, a bare repo name, or a repo alias. Omit to infer it "
+        "from the ticket summary via infer.repo: in config",
+    )
 
     p = add("next", cmd_next, help="run whatever the resolver says is next")
     p.add_argument("key")

@@ -1,3 +1,4 @@
+import re
 import textwrap
 from pathlib import Path
 
@@ -596,3 +597,207 @@ def test_a_yaml_boolean_key_is_reported_not_raised(tmp_path):
     with pytest.raises(ConfigError) as exc:
         load_config(write(tmp_path, SAMPLE + "\nno: 1\nzzz: 2\n"))
     assert "zzz" in str(exc.value)
+
+
+INFER = textwrap.dedent("""
+    models:
+      opus: claude-opus-5
+
+    defaults:
+      model: opus
+
+    owner: sfrankle
+
+    steps:
+      - id: evaluate
+        model: opus
+        prompt: prompts/evaluate.md
+
+    repos:
+      sfrankle/content-security-mode:
+        aliases: [CSM]
+      sfrankle/tickets-dag:
+        aliases: [DAG, tickets]
+
+    infer:
+      repo:
+        patterns:
+          - "[{alias}]"
+          - "[{repo}]"
+""")
+
+
+def test_owner_loads(tmp_path):
+    assert load_config(write(tmp_path, INFER)).owner == "sfrankle"
+
+
+def test_owner_defaults_to_none(tmp_path):
+    assert load_config(write(tmp_path, SAMPLE)).owner is None
+
+
+def test_alias_resolves_to_the_full_repo_name(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.resolve_repo("CSM") == "sfrankle/content-security-mode"
+
+
+def test_bare_repo_name_resolves_against_owner(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.resolve_repo("tickets-dag") == "sfrankle/tickets-dag"
+
+
+def test_full_repo_name_resolves_to_itself(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.resolve_repo("sfrankle/tickets-dag") == "sfrankle/tickets-dag"
+
+
+def test_an_unknown_repo_resolves_to_itself(tmp_path):
+    """The engine never invents a repo: a name it does not know is passed through."""
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.resolve_repo("acme/unheard-of") == "acme/unheard-of"
+
+
+def test_alias_pattern_finds_the_repo_in_a_summary(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    guess = cfg.infer_repo("[CSM] tighten the session cookie")
+    assert guess.repo == "sfrankle/content-security-mode"
+    assert guess.why == ""
+
+
+def test_repo_pattern_finds_a_spelled_out_repo(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.infer_repo("[content-security-mode] tighten it").repo == (
+        "sfrankle/content-security-mode"
+    )
+
+
+def test_inference_ignores_case(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.infer_repo("[csm] tighten it").repo == ("sfrankle/content-security-mode")
+
+
+def test_a_pattern_matches_literally_not_as_a_regex(tmp_path):
+    """`[` in a pattern is a bracket a human typed, not a character class."""
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.infer_repo("CSM without the brackets").repo is None
+
+
+def test_no_match_is_not_an_error_but_says_so(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    guess = cfg.infer_repo("no repo named here")
+    assert guess.repo is None
+    assert "no repo" in guess.why
+
+
+def test_two_repos_in_one_summary_is_not_guessed(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    guess = cfg.infer_repo("[CSM] and [DAG] both")
+    assert guess.repo is None
+    assert "sfrankle/content-security-mode" in guess.why
+    assert "sfrankle/tickets-dag" in guess.why
+
+
+def test_the_same_repo_named_twice_is_not_ambiguous(tmp_path):
+    cfg = load_config(write(tmp_path, INFER))
+    assert cfg.infer_repo("[CSM] see also [content-security-mode]").repo == (
+        "sfrankle/content-security-mode"
+    )
+
+
+def test_no_infer_block_means_no_inference(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert cfg.infer_repo("[CSM] anything").repo is None
+
+
+def test_an_unknown_placeholder_is_an_error(tmp_path):
+    text = INFER.replace('"[{alias}]"', '"[{nonsense}]"')
+    with pytest.raises(ConfigError, match="nonsense"):
+        load_config(write(tmp_path, text))
+
+
+def test_an_unknown_key_under_infer_is_an_error(tmp_path):
+    text = INFER.replace("  repo:\n", "  repo:\n    from: summary\n")
+    with pytest.raises(ConfigError, match="from"):
+        load_config(write(tmp_path, text))
+
+
+def test_aliases_must_be_a_list(tmp_path):
+    text = INFER.replace("aliases: [CSM]", "aliases: CSM")
+    with pytest.raises(ConfigError, match="aliases"):
+        load_config(write(tmp_path, text))
+
+
+def test_an_alias_claimed_by_two_repos_is_an_error(tmp_path):
+    text = INFER.replace("aliases: [DAG, tickets]", "aliases: [DAG, csm]")
+    with pytest.raises(ConfigError, match="csm"):
+        load_config(write(tmp_path, text))
+
+
+# The same collision as above, but the alias collides with a repo's own full
+# name declared *after* it, rather than with another alias.
+COLLIDES_WITH_LATER_REPO = textwrap.dedent("""
+    models:
+      opus: claude-opus-5
+
+    defaults:
+      model: opus
+
+    steps:
+      - id: evaluate
+        model: opus
+        prompt: prompts/evaluate.md
+
+    repos:
+      team/widget:
+        aliases: [core/base]
+      core/base: {}
+""")
+
+
+def test_an_alias_claimed_by_a_later_repos_own_name_is_an_error(tmp_path):
+    """Collision detection must not depend on repos: declaration order."""
+    with pytest.raises(ConfigError, match="core/base"):
+        load_config(write(tmp_path, COLLIDES_WITH_LATER_REPO))
+
+
+# The same config, with two owners laying claim to the bare name `api`.
+TWO_OWNERS = INFER.replace(
+    """repos:
+  sfrankle/content-security-mode:
+    aliases: [CSM]
+  sfrankle/tickets-dag:
+    aliases: [DAG, tickets]
+""",
+    """repos:
+  sfrankle/api: {}
+  acme/api: {}
+""",
+).replace('      - "[{alias}]"\n', "")
+
+
+def test_a_bare_name_two_owners_claim_resolves_to_neither(tmp_path):
+    """Matching the wrong clone is not recoverable; not matching is."""
+    cfg = load_config(write(tmp_path, TWO_OWNERS))
+    assert cfg.resolve_repo("api") == "sfrankle/api"
+    assert cfg.resolve_repo("acme/api") == "acme/api"
+
+
+def test_a_bare_name_two_owners_claim_is_not_inferred(tmp_path):
+    cfg = load_config(write(tmp_path, TWO_OWNERS))
+    guess = cfg.infer_repo("[api] tighten it")
+    assert guess.repo is None
+
+
+def test_a_repo_override_that_is_not_a_mapping_says_so(tmp_path):
+    """`ticket config --validate` reports this rather than raising a traceback."""
+    broken = TWO_OWNERS.replace("sfrankle/api: {}", "sfrankle/api: nope")
+    with pytest.raises(
+        ConfigError, match=re.escape("repos.sfrankle/api must be a mapping")
+    ):
+        load_config(write(tmp_path, broken))
+
+
+def test_an_empty_alias_is_an_error(tmp_path):
+    """An empty alternation branch matches everywhere, so `[] hi` names a repo."""
+    broken = INFER.replace("aliases: [CSM]", 'aliases: [CSM, "  "]')
+    with pytest.raises(ConfigError, match="aliases"):
+        load_config(write(tmp_path, broken))

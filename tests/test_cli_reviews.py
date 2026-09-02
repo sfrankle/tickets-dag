@@ -473,26 +473,11 @@ def test_refresh_updates_the_head(env, fake_bin, capsys):
     assert "deadbee" in capsys.readouterr().out
 
 
-def _add_fake_tracker(fake_bin, summary: str) -> None:
-    """`fake_bin` only wires up gh/git/claude; refresh also shells out to
-    whatever `tracker.summary` names, so tests that care add a copy by hand."""
-    import stat
-    import sys
-
-    body = (
-        (Path(__file__).parent / "fakes" / "fake_tool.py").read_text().split("\n", 1)[1]
-    )
-    target = fake_bin.directory / "faketracker"
-    target.write_text(f"#!{sys.executable}\n{body}")
-    target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    fake_bin.respond("faketracker issue view", stdout=summary)
-
-
 def test_refresh_dry_run_makes_no_write_and_no_tracker_call(
-    env, fake_bin, capsys, store
+    env, fake_bin, fake_tracker, capsys, store
 ):
     started(fake_bin)
-    _add_fake_tracker(fake_bin, "ABC-123: fresh summary\n")
+    fake_tracker("ABC-123: fresh summary\n")
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "deadbee"}))
     capsys.readouterr()
     assert main(["refresh", "ABC-123", "--dry-run"]) == 0
@@ -504,10 +489,10 @@ def test_refresh_dry_run_makes_no_write_and_no_tracker_call(
 
 
 def test_refresh_without_dry_run_writes_pr_and_calls_the_tracker(
-    env, fake_bin, capsys, store
+    env, fake_bin, fake_tracker, capsys, store
 ):
     started(fake_bin)
-    _add_fake_tracker(fake_bin, "ABC-123: fresh summary\n")
+    fake_tracker("ABC-123: fresh summary\n")
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "deadbee"}))
     assert main(["refresh", "ABC-123"]) == 0
     assert fake_bin.calls_to("faketracker")
@@ -552,11 +537,11 @@ def test_dry_run_on_review_posts_nothing(env, fake_bin):
 
 
 def test_refresh_skips_the_tracker_when_the_command_is_not_configured(
-    env, fake_bin, capsys, store, tmp_path
+    env, fake_bin, fake_tracker, capsys, store, tmp_path
 ):
     """No `tracker:` block is the default, and it must not be an error."""
     started(fake_bin)
-    _add_fake_tracker(fake_bin, "ABC-123: fresh summary\n")
+    fake_tracker("ABC-123: fresh summary\n")
     config = tmp_path / "config.yml"
     config.write_text(
         CONFIG.replace(
