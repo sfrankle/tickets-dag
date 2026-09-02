@@ -16,12 +16,35 @@ From a clone — the config, prompts and scripts `Configure` copies live in `exa
 ```bash
 mkdir -p ~/.ticket
 cp examples/config.yml ~/.ticket/config.yml
-cp -r examples/prompts examples/scripts ~/.ticket/
+cp -r examples/input ~/.ticket/
 ```
 
 Edit `~/.ticket/config.yml`.
 `$TICKET_CONFIG` overrides the location and `$TICKET_STORE` overrides the store, for throwaway or test runs.
 The store defaults to whichever directory the config file was found in, so pointing `$TICKET_CONFIG` at another config moves the state along with it.
+
+It is grouped by ticket key: everything one ticket knows sits in one directory.
+
+```
+~/.ticket/
+  config.yml
+  input/
+    prompts/                          # what handoffs and reviews are given
+    scripts/                          # what script steps run
+  tickets/
+    ABC-123/
+      state.json                      # the ticket: steps, PRs, worktree
+      acme-api_115.json               # one PR
+      acme-api_115_findings.json      # that PR's findings
+      logs/                           # one file per run, timestamped
+  locks/                              # one advisory lock per running ticket
+```
+
+Recorded log paths are relative to the store root, so moving the store does not strand them.
+A store written by an older version was grouped by type (`prs/`, `findings/`, `logs/`); it is migrated into the layout above the first time this version opens it, and nothing is deleted in the process.
+A file it cannot place — because something is already at the destination, or because it is not readable as a JSON document — stays where it is, and a PR whose ticket cannot be named is filed under `tickets/_unkeyed/`.
+Either way the migration names it on stderr, since nothing that reads the store afterwards looks there.
+`$TICKET_NO_MIGRATE` turns the migration off, for looking at an old store without rewriting it; every read then goes to the new layout, so the store reads as empty until it is migrated.
 
 ## Use
 
@@ -77,7 +100,7 @@ Without it the session can read but not write, and every hard fix ends in "chang
 That shape parses to findings for free.
 Anything else — a human comment, a bot whose output you do not control, format drift — is split into findings by Haiku instead, so nothing is lost by a reviewer that will not conform.
 Change `severities:` and both paths follow: the script parser looks for the new markers, and the Haiku prompt asks for the new names.
-The example review prompts under `examples/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
+The example review prompts under `examples/input/prompts/reviews/` state the format in full, and each one states it on its own: a `bot` review is posted as a PR comment and a `local` review runs in the ticket's checkout, so neither can read a sibling prompt file.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.
 The tracker is the other way round — the engine never learns what one is.

@@ -3,7 +3,7 @@ import textwrap
 import pytest
 
 from ticket.config import load_config
-from ticket.resolve import next_action
+from ticket.resolve import next_action, orphan_steps
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -362,3 +362,16 @@ def test_skipping_a_review_after_it_was_dispatched_does_not_wedge_collect(cfg):
     )
     action = next_action(cfg, ticket, pr, None)
     assert (action.kind, action.target) == ("review", "architecture")
+
+
+def test_orphaned_recorded_steps_are_named(cfg):
+    """A config edit can collapse or rename steps; the state file keeps the old ids.
+    They are not part of the DAG any more, so they are reported."""
+    ticket = ticket_doc(steps=done("evaluate", "jira-sync", "worktree"))
+    assert orphan_steps(cfg, ticket) == ["jira-sync", "worktree"]
+
+
+def test_orphaned_recorded_steps_do_not_satisfy_anything(cfg):
+    ticket = ticket_doc(steps=done("jira-sync", "worktree"))
+    action = next_action(cfg, ticket, None, None)
+    assert (action.kind, action.target) == ("step", "evaluate")
