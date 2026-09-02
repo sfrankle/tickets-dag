@@ -1,9 +1,10 @@
+import os
 import textwrap
 
 import pytest
 
 from ticket.config import load_config
-from ticket.steps import release_gate, run_step
+from ticket.steps import release_gate, run_step, tee
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -213,3 +214,63 @@ def test_a_missing_script_is_a_failure_not_a_crash(cfg, store):
     ticket = ticket_doc()
     result = run_step(cfg, store, ticket, cfg.step("draft-pr"))
     assert result.status == "failed"
+
+
+def test_tee_writes_each_line_as_it_arrives(cfg, tmp_path):
+    """A step that is killed mid-run must still leave what it printed on disk.
+
+    The script blocks until its own first line shows up in the log file, so it
+    can only finish if `tee` wrote that line before the process exited.
+    """
+    log = tmp_path / "run.log"
+    script = write_script(
+        cfg,
+        "streaming.sh",
+        "echo first\n"
+        "i=0\n"
+        f"while [ $i -lt 100 ]; do\n"
+        f'  if grep -q first "{log}" 2>/dev/null; then echo second; exit 0; fi\n'
+        "  sleep 0.05\n"
+        "  i=$((i+1))\n"
+        "done\n"
+        "exit 1\n",
+    )
+    output, exit_code = tee(
+        [str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log
+    )
+    assert exit_code == 0, "tee held the first line until the process exited"
+    assert output == "first\nsecond\n"
+    assert log.read_text() == "first\nsecond\n"
+
+
+def test_a_steps_log_exists_before_the_step_finishes(cfg, store, tmp_path):
+    """Same guarantee through `run_step`: the file it names is being written
+    while the step runs, not once it is over."""
+    logs = store.ticket_dir("ABC-123") / "logs"
+    write_script(
+        cfg,
+        "draft-pr.sh",
+        "echo first\n"
+        "i=0\n"
+        f"while [ $i -lt 100 ]; do\n"
+        f'  if grep -rq first "{logs}" 2>/dev/null; then echo second; exit 0; fi\n'
+        "  sleep 0.05\n"
+        "  i=$((i+1))\n"
+        "done\n"
+        "exit 1\n",
+    )
+    ticket = ticket_doc()
+    result = run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    assert result.status == "done"
+    assert (store.root / ticket["steps"]["draft-pr"]["log"]).read_text() == (
+        "first\nsecond\n"
+    )
+
+
+def test_a_step_that_cannot_be_executed_still_writes_its_log(cfg, store):
+    """The OSError path never reaches `tee`, so it has to write the log itself."""
+    ticket = ticket_doc()
+    result = run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    assert result.status == "failed"
+    log = store.root / ticket["steps"]["draft-pr"]["log"]
+    assert "could not execute" in log.read_text()

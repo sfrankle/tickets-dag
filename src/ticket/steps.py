@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,12 +71,23 @@ def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
 
 
 def tee(
-    argv: list[str], *, cwd: Path, env: dict, stdin_text: str | None
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    stdin_text: str | None,
+    log: Path | None = None,
 ) -> tuple[str, int]:
-    """Run, streaming output to the terminal as it arrives and collecting it.
+    """Run, streaming output to the terminal and to `log` as it arrives, and collecting it.
 
     A handoff can run for twenty minutes; capturing silently and printing at the
     end is the wrong experience for the one step a human actually watches.
+
+    The same argument applies to the file. Written once after the process exits,
+    a run that is killed or dies with its terminal leaves no log at all, and
+    there is nothing on disk to watch while it is still going (issue #27).
+    So the file is opened before the first line and each line is flushed as it
+    arrives: an interrupted run keeps everything it printed up to the interrupt.
     """
     process = subprocess.Popen(
         argv,
@@ -95,9 +107,19 @@ def tee(
         # below are the real story; the failed write is not.
         pass
     lines: list[str] = []
-    for line in process.stdout:
-        lines.append(line)
-        sys.stdout.write(line)
+    with ExitStack() as stack:
+        # buffering=1 is line buffering, so a reader tailing the file sees each
+        # line as the step prints it rather than a block at a time.
+        handle = (
+            stack.enter_context(open(log, "w", buffering=1))
+            if log is not None
+            else None
+        )
+        for line in process.stdout:
+            lines.append(line)
+            sys.stdout.write(line)
+            if handle is not None:
+                handle.write(line)
     return "".join(lines), process.wait()
 
 
@@ -138,12 +160,13 @@ def run_step(
             cwd=workdir(cfg, ticket),
             env=step_env(cfg, ticket),
             stdin_text=stdin_text,
+            log=log_file,
         )
     except OSError as exc:
+        # Nothing ever started, so `tee` wrote no file. This branch owns the log.
         output = f"could not execute {argv[0]}: {exc}\n"
         exit_code = 127
-
-    log_file.write_text(output)
+        log_file.write_text(output)
 
     # Recorded relative to the store root, so the pointer survives the store being moved; `StepResult.log` stays absolute because it is printed for a human to open.
     record: dict = {"status": "done", "at": now(), "log": store.relative(log_file)}

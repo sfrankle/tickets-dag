@@ -23,6 +23,7 @@ import os
 import sys
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -229,6 +230,25 @@ class Store:
 
     # --- locking -------------------------------------------------------
 
+    def lock_path(self, key: str) -> Path:
+        return self.root / "locks" / f"{key}.lock"
+
+    def lock_status(self, key: str) -> LockStatus | None:
+        """Who holds this key's lock, and whether that run is still running.
+
+        `None` means nothing holds it. Otherwise the pid the lock file records,
+        and whether a process with that pid exists — which is what separates a
+        run still working from one that died without releasing (issue #27).
+        """
+        path = self.lock_path(key)
+        if not path.exists():
+            return None
+        pid = _lock_pid(path)
+        return LockStatus(path=path, pid=pid, alive=pid is not None and _alive(pid))
+
+    def clear_lock(self, key: str) -> None:
+        self.lock_path(key).unlink(missing_ok=True)
+
     @contextmanager
     def lock(self, key: str):
         directory = self.root / "locks"
@@ -238,7 +258,8 @@ class Store:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             raise StoreError(
-                f"{key} is locked by another run ({path}). Remove it if that run died."
+                f"{key} is locked by another run ({path}). "
+                f"Run `ticket unlock {key}` to clear it if that run died."
             ) from None
         try:
             try:
@@ -248,6 +269,47 @@ class Store:
             yield
         finally:
             path.unlink(missing_ok=True)
+
+
+# --- locking helpers ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LockStatus:
+    path: Path
+    pid: int | None
+    alive: bool
+
+
+def _lock_pid(path: Path) -> int | None:
+    """The pid a lock file records, or `None` if it does not record a usable one.
+
+    A run killed between creating the file and writing its pid leaves it empty.
+    Unknown is not the same as alive: the file is stale either way, and reading
+    it as a live holder would make the one verb that clears it refuse forever.
+    """
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _alive(pid: int) -> bool:
+    """Does a process with this pid exist?
+
+    Signal 0 checks for the process without sending anything. `PermissionError`
+    means it exists and belongs to someone else, which is still alive.
+    Pids are reused, so this can in principle name a different process than the
+    one that took the lock; nothing cheap distinguishes them, and the alternative
+    is the hand-deleted lock file this replaces.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 # --- migration ------------------------------------------------------------

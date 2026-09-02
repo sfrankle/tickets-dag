@@ -718,3 +718,36 @@ def test_next_does_not_count_a_re_read_as_a_new_source(env, fake_bin, capsys):
     out = capsys.readouterr().out
     assert "collected 0 new sources" not in out
     assert "re-read 1" in out
+
+
+def test_open_takes_a_pr_like_every_other_verb(env, fake_bin):
+    """`open` was the one verb hardcoded to `prs[-1]` (issue #27)."""
+    from ticket.store import Store
+
+    started(fake_bin)
+    store = Store(env / "store")
+    ticket = store.read_ticket("ABC-123")
+    ticket["prs"] = ["acme/api#115", "acme/api#200"]
+    store.write_ticket(ticket)
+    assert main(["open", "ABC-123", "--pr", "115"]) == 0
+    viewed = next(c for c in fake_bin.calls_to("gh") if "--web" in c)
+    assert "115" in viewed
+
+
+def test_open_without_a_pr_flag_still_takes_the_newest(env, fake_bin):
+    from ticket.store import Store
+
+    started(fake_bin)
+    store = Store(env / "store")
+    ticket = store.read_ticket("ABC-123")
+    ticket["prs"] = ["acme/api#115", "acme/api#200"]
+    store.write_ticket(ticket)
+    assert main(["open", "ABC-123"]) == 0
+    viewed = next(c for c in fake_bin.calls_to("gh") if "--web" in c)
+    assert "200" in viewed
+
+
+def test_open_names_the_prs_it_knows_when_the_flag_misses(env, fake_bin, capsys):
+    started(fake_bin)
+    assert main(["open", "ABC-123", "--pr", "999"]) == 1
+    assert "acme/api#115" in capsys.readouterr().err
