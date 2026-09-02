@@ -77,6 +77,7 @@ Without it the session can read but not write, and every hard fix ends in "chang
 That shape parses to findings for free.
 The grammar is deliberately loose about the rest, because the shape is one several bots land on rather than one bot's exact bytes: attributes on the tag (`<details open>`) are fine, a finding is either a `*`/`-` bullet or a paragraph opening with a bolded lead, and a trailing summary table is counted as decoration rather than turned into findings.
 A fenced block belongs to the finding it sits in, so a suggested diff stays one finding rather than becoming a bullet per changed line; a section written entirely as a table is one we have no rule for and goes to Haiku.
+A `<details>` folded inside a section is read as part of it rather than as the end of it, so evidence a bot tucks away does not cost you the findings under it.
 `summary` is derived from the finding — the bolded lead where there is one, otherwise the first sentence, capped — so it stays a line you can print in a row while `body` keeps the full text.
 A file is recorded only when the text names something that is actually a path; a bare symbol like `logger.warn` records no file, because a wrong file is worse than none.
 Both fields feed the dedupe fingerprint, so on the first collect after upgrading from a store parsed by the old grammar, still-open script-parsed findings fingerprint differently than they did when stored and are re-added once.

@@ -47,6 +47,12 @@ DETAILS_RE = re.compile(
     r"(?P<body>.*?)</details>",
     re.DOTALL | re.IGNORECASE,
 )
+# The same block read as two halves, so a nested `<details>` can be counted past rather than mistaken for the end of the section it sits in.
+DETAILS_OPEN_RE = re.compile(
+    r"<details[^>]*>\s*<summary[^>]*>(?P<summary>.*?)</summary>",
+    re.DOTALL | re.IGNORECASE,
+)
+DETAILS_TAG_RE = re.compile(r"<(?P<close>/?)details[^>]*>", re.IGNORECASE)
 VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*", re.MULTILINE)
 EMPTY_RE = re.compile(r"^\s*(None\.?|No findings\.?)\s*$", re.IGNORECASE | re.MULTILINE)
 # A finding starts either as a list item or as a paragraph opening with a bolded lead — `**Title - summary** (`path`): text` is one finding, and the `*` bullet rule reads its first asterisk and then fails on the second.
@@ -235,6 +241,34 @@ def _file_of(text: str, pattern: re.Pattern | None = None) -> str | None:
     return None
 
 
+def _sections(text: str, grammar: Grammar) -> list[tuple[str, str]]:
+    """Every `<details>` block in `text`, as (summary, body).
+
+    The built-in walks the tags and counts depth: bots fold evidence into an inner block, and a lazy `.*?</details>` ends the outer section on the inner close tag, losing every finding after it.
+    An override is one regex and is taken at its word, the way `file:` is.
+    """
+    if grammar.details is not DETAILS_RE:
+        return [
+            (match.group("summary"), match.group("body"))
+            for match in grammar.details.finditer(text)
+        ]
+    sections: list[tuple[str, str]] = []
+    consumed = 0
+    for opened in DETAILS_OPEN_RE.finditer(text):
+        if opened.start() < consumed:
+            # Nested inside a block we already took, and read as part of it.
+            continue
+        depth = 1
+        for tag in DETAILS_TAG_RE.finditer(text, opened.end()):
+            depth += -1 if tag.group("close") else 1
+            if depth == 0:
+                body = text[opened.end() : tag.start()]
+                sections.append((opened.group("summary"), body))
+                consumed = tag.end()
+                break
+    return sections
+
+
 def _has_content(block: str, grammar: Grammar) -> bool:
     """Anything in this section that a finding could have been made out of.
 
@@ -310,16 +344,15 @@ def _units(block: str, grammar: Grammar) -> list[str]:
 def script_parse(cfg: Config, body: str, author: str | None = None) -> ScriptParse:
     grammar = grammar_for(cfg, author)
     sections = [
-        (match, severity)
-        for match in grammar.details.finditer(body)
-        if (severity := cfg.severity_for_marker(match.group("summary"))) is not None
+        (section, severity)
+        for heading, section in _sections(body, grammar)
+        if (severity := cfg.severity_for_marker(heading)) is not None
     ]
     if not sections or not grammar.verdict.search(body):
         return ScriptParse(False, [])
 
     findings: list[dict] = []
-    for match, severity in sections:
-        section = match.group("body")
+    for section, severity in sections:
         units = _units(section, grammar)
         if not units and _has_content(section, grammar):
             # Our markers and our verdict, but a section we have no rule for.

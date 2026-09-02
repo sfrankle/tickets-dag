@@ -491,3 +491,9 @@ def test_a_capped_summary_does_not_end_on_a_dangling_dash():
     for dash in DASHES:
         text = f"{'word ' * 23}{dash} and then some more text after the break"
         assert _cap(text) == f"{'word ' * 23}".strip() + "…"
+
+
+def test_a_nested_details_does_not_truncate_the_section(cfg):
+    """Bots fold evidence into an inner block; the lazy body used to end on its close tag."""
+    findings = parse_script(cfg, body("nested-details.md"))
+    assert [f["file"] for f in findings] == ["src/api/retry.py", "src/api/reject.py"]
