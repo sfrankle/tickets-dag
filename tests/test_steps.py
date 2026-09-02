@@ -1,5 +1,4 @@
 import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -69,14 +68,14 @@ def test_script_step_failure_records_exit_code_and_log(cfg, store):
     result = run_step(cfg, store, ticket, cfg.step("draft-pr"))
     assert result.status == "failed"
     assert ticket["steps"]["draft-pr"]["exit_code"] == 3
-    assert "nope" in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
+    assert "nope" in store.read_log(ticket["steps"]["draft-pr"]["log"])
 
 
 def test_script_step_receives_ticket_env(cfg, store):
     write_script(cfg, "draft-pr.sh", 'echo "$TICKET_KEY $TICKET_REPO"\n')
     ticket = ticket_doc()
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    assert "ABC-123 acme/api" in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
+    assert "ABC-123 acme/api" in store.read_log(ticket["steps"]["draft-pr"]["log"])
 
 
 def test_a_printed_pr_ref_is_registered_on_the_ticket(cfg, store):
@@ -132,7 +131,7 @@ def test_a_step_runs_in_the_worktree_once_one_is_registered(cfg, store):
     ticket = ticket_doc()
     ticket["worktree"] = str(checkout)
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    assert str(checkout) in Path(ticket["steps"]["draft-pr"]["log"]).read_text()
+    assert str(checkout) in store.read_log(ticket["steps"]["draft-pr"]["log"])
 
 
 def test_a_step_gets_the_worktree_and_branch_in_its_env(cfg, store):
@@ -143,7 +142,7 @@ def test_a_step_gets_the_worktree_and_branch_in_its_env(cfg, store):
     )
     ticket = ticket_doc()
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
-    logged = Path(ticket["steps"]["draft-pr"]["log"]).read_text()
+    logged = store.read_log(ticket["steps"]["draft-pr"]["log"])
     assert "ABC-123|1" in logged
 
 

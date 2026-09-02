@@ -23,7 +23,7 @@ from . import steps as steps_module
 from .config import Config, load_config
 from .effort import EFFORTS
 from .errors import TicketError
-from .resolve import Action, active_pr, next_action, open_findings
+from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
 from .store import Store, now
 
 # A key is not just a label: it is a store filename, a lock filename, a log
@@ -95,8 +95,8 @@ def resolve_for(ctx: Context, ticket: dict) -> Action:
     pr_ref = active_pr(ticket)
     # A missing PR document reads as an empty one: it is only written on the
     # first dispatch, and the first review is due before that.
-    pr = (ctx.store.read_pr(pr_ref) or {}) if pr_ref else None
-    findings = ctx.store.read_findings(pr_ref) if pr_ref else None
+    pr = (ctx.store.read_pr(pr_ref, ticket["key"]) or {}) if pr_ref else None
+    findings = ctx.store.read_findings(pr_ref, ticket["key"]) if pr_ref else None
     return next_action(ctx.cfg, ticket, pr, findings)
 
 
@@ -107,7 +107,9 @@ def _row(ctx: Context, ticket: dict) -> dict:
     inner = scoped(ctx, ticket)
     action = resolve_for(inner, ticket)
     pr_ref = active_pr(ticket)
-    findings = inner.store.read_findings(pr_ref) if pr_ref else {"findings": []}
+    findings = (
+        inner.store.read_findings(pr_ref, ticket["key"]) if pr_ref else {"findings": []}
+    )
     open_findings = [f for f in findings["findings"] if f.get("status") == "open"]
     return {
         "key": ticket["key"],
@@ -148,8 +150,10 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
         findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
         print(f"PR: {row['pr']}{findings}")
     for step in scoped(ctx, ticket).cfg.steps:
-        status = (ticket.get("steps") or {}).get(step.id, {}).get("status", "-")
-        print(f"  {step.id:<16} {status}")
+        record = (ticket.get("steps") or {}).get(step.id) or {}
+        # A recorded path can outlive its file; say so here rather than let whatever goes to read it fall over.
+        missing = "  (log missing)" if ctx.store.log_missing(record.get("log")) else ""
+        print(f"  {step.id:<16} {record.get('status', '-')}{missing}")
     print(
         f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"
     )
@@ -262,9 +266,24 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
     raise TicketError(f"unhandled action {action.kind}")
 
 
+def warn_about_orphans(ctx: Context, ticket: dict) -> None:
+    """Say so when state records steps this config has never heard of.
+
+    The unscoped config on purpose: a `repos.<repo>.steps.skip` removes a step from the resolved config legitimately, and that is not a dead id.
+    """
+    dead = orphan_steps(ctx.cfg, ticket)
+    if dead:
+        print(
+            f"warning: {ticket['key']} records steps config.yml no longer defines: "
+            f"{', '.join(dead)}. They are kept, and ignored when resolving.",
+            file=sys.stderr,
+        )
+
+
 def cmd_next(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
+    warn_about_orphans(ctx, ticket)
     inner = scoped(ctx, ticket)
     action = resolve_for(inner, ticket)
     return _execute(inner, ticket, action, args.dry_run)
@@ -321,7 +340,7 @@ def cmd_skip(args) -> int:
         raise TicketError(
             f"{args.key} has no PR yet, so review {args.step} cannot be skipped"
         )
-    pr = inner.store.read_pr(pr_ref) or {
+    pr = inner.store.read_pr(pr_ref, ticket["key"]) or {
         "pr": pr_ref,
         "key": args.key,
         "dispatched": [],
@@ -498,7 +517,7 @@ def cmd_reviews(args) -> int:
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
-    pr = inner.store.read_pr(pr_ref) or reviews_module.ensure_pr(
+    pr = inner.store.read_pr(pr_ref, ticket["key"]) or reviews_module.ensure_pr(
         inner.store, ticket, pr_ref
     )
     if args.json:

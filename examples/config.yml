@@ -2,6 +2,9 @@
 # store: defaults to this file's own directory, so moving the config moves the
 # state with it. Set it only to split the two apart. Relative values, here and
 # in worktrees.root, resolve against this file's directory, not the cwd.
+#
+# What this file points at lives under `input/` beside it — `input/prompts/` and `input/scripts/`.
+# State lives under `tickets/<KEY>/`, one directory per ticket, with `locks/` alongside it.
 store: ~/.ticket
 
 models:
@@ -76,11 +79,11 @@ worktrees:
 steps:
   - id: evaluate
     model: opus
-    prompt: prompts/evaluate.md
+    prompt: input/prompts/evaluate.md
 
   - id: spec
     model: opus
-    prompt: prompts/spec.md
+    prompt: input/prompts/spec.md
     needs: [evaluate]
 
   - id: review-spec
@@ -89,7 +92,7 @@ steps:
 
   - id: plan
     model: opus
-    prompt: prompts/plan.md
+    prompt: input/prompts/plan.md
     needs: [review-spec]
 
   - id: review-plan
@@ -97,24 +100,24 @@ steps:
     needs: [plan]
 
   - id: worktree
-    run: scripts/worktree.sh
+    run: input/scripts/worktree.sh
     needs: [review-plan]
 
   - id: implement
     model: opus
-    prompt: prompts/implement.md
+    prompt: input/prompts/implement.md
     needs: [worktree]
     # `args:` is appended to the claude argv. This is where agent mode goes —
     # a handoff that has to write files needs it.
     args: [--permission-mode, acceptEdits]
 
   - id: draft-pr
-    run: scripts/draft-pr.sh
+    run: input/scripts/draft-pr.sh
     needs: [implement]
 
   - id: describe
     model: haiku
-    prompt: prompts/describe.md
+    prompt: input/prompts/describe.md
     needs: [draft-pr]
 
 # The local session a `hard` finding gets. Not a step — a fix is not in the
@@ -135,13 +138,13 @@ reviews:
   - id: correctness
     order: 1
     dispatch: bot
-    prompt: prompts/reviews/correctness.md
+    prompt: input/prompts/reviews/correctness.md
 
   - id: security
     order: 2
     dispatch: local
     model: opus
-    prompt: prompts/reviews/security.md
+    prompt: input/prompts/reviews/security.md
 
 # Shallow overrides. `reviews:` replaces the list; `steps.skip:` subtracts.
 repos:

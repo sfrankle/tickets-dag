@@ -50,7 +50,7 @@ def test_the_example_fix_block_can_write_files():
 
 
 def test_the_worktree_script_honours_the_worktree_setting():
-    text = (EXAMPLES / "scripts" / "worktree.sh").read_text()
+    text = (EXAMPLES / "input" / "scripts" / "worktree.sh").read_text()
     assert "TICKET_USE_WORKTREES" in text
     assert "ticket-worktree:" in text
 
