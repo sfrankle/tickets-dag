@@ -164,6 +164,11 @@ owner: acme
 # Shallow overrides. `reviews:` replaces the list; `steps.skip:` subtracts.
 # `aliases:` are the other names a repo goes by — what people type after
 # `--repo`, and what `infer:` below looks for in a ticket summary.
+#
+# The two `path:` values below are placeholders, and `ticket config --validate`
+# says so as a warning rather than a problem: a clone that is not there yet is
+# the state of a fresh machine, not a mistake in this file. Point them at your
+# own checkouts and the warning goes away.
 repos:
   acme/api:
     path: ~/code/api          # the clone worktrees are added from

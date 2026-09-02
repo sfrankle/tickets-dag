@@ -43,14 +43,20 @@ def _run_local(cfg: Config, ticket: dict, review: Review, prompt_text: str) -> s
     model = cfg.model_id(review.model or cfg.default_model)
     # cwd matters: a review reads the diff, so it has to run in the checkout.
     # The prompt goes on stdin (decision #21).
-    completed = subprocess.run(
-        ["claude", "-p", "--model", model, *review.args],
-        cwd=str(workdir(cfg, ticket)),
-        input=prompt_text,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["claude", "-p", "--model", model, *review.args],
+            cwd=str(workdir(cfg, ticket)),
+            input=prompt_text,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        # A missing checkout is a config problem, not a crash: `config --validate`
+        # only warns about an unclonable `repos.<repo>.path`, so the failure has
+        # to land here as a TicketError `main` can print.
+        raise TicketError(f"local review {review.id}: {exc}") from None
     if completed.returncode != 0:
         raise TicketError(
             f"local review {review.id} failed: {completed.stderr.strip() or completed.returncode}"

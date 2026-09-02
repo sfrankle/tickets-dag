@@ -4,6 +4,7 @@ import textwrap
 import pytest
 
 from ticket.config import load_config
+from ticket.errors import TicketError
 from ticket.reviews import bot_body, dispatch
 
 CONFIG = textwrap.dedent("""
@@ -110,6 +111,20 @@ def test_a_local_review_runs_in_the_worktree(cfg, store, fake_bin, tmp_path):
     ticket["worktree"] = str(checkout)
     dispatch(cfg, store, ticket, "acme/api#115", cfg.review("architecture"))
     assert fake_bin.calls_to("claude")
+
+
+def test_a_local_review_names_a_checkout_that_is_not_there(
+    cfg, store, fake_bin, tmp_path
+):
+    """`config --validate` only warns about a `repos.<repo>.path` that is not
+    cloned, so the checkout can be missing at dispatch time. That has to read
+    as a TicketError naming the path, not a FileNotFoundError traceback out of
+    subprocess."""
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
+    ticket = ticket_doc()
+    ticket["worktree"] = str(tmp_path / "never-cloned")
+    with pytest.raises(TicketError, match="never-cloned"):
+        dispatch(cfg, store, ticket, "acme/api#115", cfg.review("architecture"))
 
 
 def test_dry_run_posts_nothing_and_records_nothing(cfg, store, fake_bin):

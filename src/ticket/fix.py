@@ -64,6 +64,13 @@ def worktree_of(ticket: dict) -> Path:
             f"{ticket['key']} has no worktree recorded. A script step announces one by "
             f"printing `ticket-worktree: /path` on stdout."
         )
+    # A recorded worktree can be deleted between runs, and every consumer below
+    # shells out with `cwd=worktree`. Catch it here so it reads as a named path
+    # rather than a FileNotFoundError out of subprocess.
+    if not Path(path).is_dir():
+        raise TicketError(
+            f"{ticket['key']} records a worktree that is not there: {path}"
+        )
     return Path(path)
 
 
@@ -256,14 +263,17 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     # `cfg.fix.args` is where agent mode goes. Without it the session can read
     # but not write, and every hard fix ends in "changed nothing" below.
     print(f"{finding['id']}: running a local session; this can take a while")
-    completed = subprocess.run(
-        ["claude", "-p", "--model", cfg.model_id(cfg.fix.model), *cfg.fix.args],
-        cwd=str(worktree),
-        input=prompt,  # stdin, not argv — decision #21
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["claude", "-p", "--model", cfg.model_id(cfg.fix.model), *cfg.fix.args],
+            cwd=str(worktree),
+            input=prompt,  # stdin, not argv — decision #21
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise TicketError(f"local fix for {finding['id']}: {exc}") from None
     if completed.returncode != 0:
         raise TicketError(
             f"local fix for {finding['id']} failed: {completed.stderr.strip()}"

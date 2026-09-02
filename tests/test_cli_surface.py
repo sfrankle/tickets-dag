@@ -260,6 +260,7 @@ def test_config_json_is_machine_readable(tracked, capsys):
     doc = json.loads(capsys.readouterr().out)
     assert doc["valid"] is True
     assert doc["problems"] == []
+    assert doc["warnings"] == []
     assert doc["steps"][0]["id"] == "evaluate"
 
 
@@ -289,6 +290,47 @@ def test_config_validate_names_a_script_that_cannot_be_run(tracked, capsys):
     assert "draft-pr" in out and "not executable" in out
 
 
+def test_config_validate_names_a_fix_script_that_is_not_there(tracked, capsys):
+    """`fix:` is two more paths off the config, and they break a run the same
+    way a step's do — later, and only once a finding is routed `easy`."""
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nfix:\n  easy:\n    run: scripts/nope.sh\n"
+    )
+    assert main(["config", "--validate"]) == 1
+    out = capsys.readouterr().out
+    assert "fix.easy" in out and "scripts/nope.sh" in out
+
+
+def test_config_validate_names_a_fix_script_that_cannot_be_run(tracked, capsys):
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nfix:\n  easy:\n    run: scripts/draft-pr.sh\n"
+    )
+    (tracked / "scripts" / "draft-pr.sh").chmod(0o644)
+    assert main(["config", "--validate"]) == 1
+    out = capsys.readouterr().out
+    assert "fix.easy" in out and "not executable" in out
+
+
+def test_config_validate_names_a_fix_prompt_that_is_not_there(tracked, capsys):
+    """`fix.hard.prompt` is optional — there is a built-in — but one that is
+    named and missing is still the config being wrong about itself."""
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nfix:\n  hard:\n    prompt: prompts/nope.md\n"
+    )
+    assert main(["config", "--validate"]) == 1
+    out = capsys.readouterr().out
+    assert "fix.hard" in out and "prompts/nope.md" in out
+
+
+def test_config_validate_is_happy_with_a_fix_block_that_resolves(tracked, capsys):
+    (tracked / "config.yml").write_text(
+        CONFIG
+        + "\nfix:\n  easy:\n    run: scripts/draft-pr.sh\n"
+        + "  hard:\n    prompt: prompts/evaluate.md\n"
+    )
+    assert main(["config", "--validate"]) == 0
+
+
 def test_config_validate_reports_a_cycle_rather_than_raising(tracked, capsys):
     (tracked / "config.yml").write_text(
         textwrap.dedent("""
@@ -305,6 +347,46 @@ def test_config_validate_reports_a_cycle_rather_than_raising(tracked, capsys):
     )
     assert main(["config", "--validate"]) == 1
     assert "cycle" in capsys.readouterr().out
+
+
+def test_config_validate_warns_about_a_repo_path_that_is_not_there(tracked, capsys):
+    """A placeholder path is not a broken config.
+
+    Issue #23.3: the shipped example carries `~/code/api`, which no machine but
+    its author's has. The config is still correct; the clone is just not made
+    yet, and every verb that needs it fails at the point of use.
+    """
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nrepos:\n  acme/api:\n    path: ./nowhere\n"
+    )
+    assert main(["config", "--validate"]) == 0
+    out = capsys.readouterr().out
+    assert "1 warning" in out
+    assert "repos.acme/api" in out and "is not a directory" in out
+    assert "invalid" not in out
+
+
+def test_config_validate_still_fails_on_a_problem_alongside_a_warning(tracked, capsys):
+    """The warning tier widens what is reported, not what is tolerated."""
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nrepos:\n  acme/api:\n    path: ./nowhere\n"
+    )
+    (tracked / "prompts" / "evaluate.md").unlink()
+    assert main(["config", "--validate"]) == 1
+    out = capsys.readouterr().out
+    assert "1 warning" in out
+    assert "invalid: 1 problem" in out
+
+
+def test_config_json_separates_warnings_from_problems(tracked, capsys):
+    (tracked / "config.yml").write_text(
+        CONFIG + "\nrepos:\n  acme/api:\n    path: ./nowhere\n"
+    )
+    assert main(["config", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["valid"] is True
+    assert doc["problems"] == []
+    assert len(doc["warnings"]) == 1
 
 
 def test_config_validate_reports_an_unknown_key(tracked, capsys):
