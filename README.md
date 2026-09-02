@@ -76,8 +76,11 @@ Without it the session can read but not write, and every hard fix ends in "chang
 **The review format is the tool's contract.** A review this tool dispatches is expected to answer in one `<details>` block per severity — keyed by that severity's configured marker in the `<summary>` — with each finding naming its file in backticks, `None.` in an empty block, and a closing `**Verdict:**` line.
 That shape parses to findings for free.
 The grammar is deliberately loose about the rest, because the shape is one several bots land on rather than one bot's exact bytes: attributes on the tag (`<details open>`) are fine, a finding is either a `*`/`-` bullet or a paragraph opening with a bolded lead, and a trailing summary table is counted as decoration rather than turned into findings.
+A fenced block belongs to the finding it sits in, so a suggested diff stays one finding rather than becoming a bullet per changed line; a section written entirely as a table is one we have no rule for and goes to Haiku.
 `summary` is derived from the finding — the bolded lead where there is one, otherwise the first sentence, capped — so it stays a line you can print in a row while `body` keeps the full text.
 A file is recorded only when the text names something that is actually a path; a bare symbol like `logger.warn` records no file, because a wrong file is worse than none.
+Both fields feed the dedupe fingerprint, so on the first collect after upgrading from a store parsed by the old grammar, still-open script-parsed findings fingerprint differently than they did when stored and are re-added once.
+It settles after that collect; resolve or wontfix the stale copies.
 Anything else — a human comment, a bot whose output you do not control, format drift — is split into findings by Haiku instead, so nothing is lost by a reviewer that will not conform.
 A body carrying our markers whose sections we cannot split counts as *not ours* and goes to Haiku too; recording it as ours with zero findings is how a review gets lost silently.
 Change `severities:` and both paths follow: the script parser looks for the new markers, and the Haiku prompt asks for the new names.

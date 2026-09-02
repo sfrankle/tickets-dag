@@ -418,3 +418,50 @@ def test_a_reworded_repost_dedupes(cfg):
 def test_dedupe_still_separates_two_different_findings(cfg):
     findings = parse_script(cfg, body("wide-review.md"))
     assert _fingerprint(findings[0]) != _fingerprint(findings[1])
+
+
+# --- review of #9/#11: shapes the widened grammar has to survive ---
+
+
+def test_a_fenced_diff_inside_a_finding_is_not_three_findings(cfg):
+    """Widening bullets to `-` and `+` made every suggested-diff line a finding.
+
+    A fence is part of the finding it sits in, whatever its lines start with.
+    """
+    findings = parse_script(cfg, body("fenced-diff.md"))
+    assert len(findings) == 1
+    assert "if (x != null) return;" in findings[0]["body"]
+    assert findings[0]["file"] == "src/Foo.kt"
+
+
+def test_a_section_whose_findings_are_a_table_goes_to_haiku(cfg):
+    """Rows are not findings, but a section made of them is not empty either.
+
+    Recording it as ours with zero findings is the silent loss #9 was filed about.
+    """
+    assert script_parse(cfg, body("findings-as-table.md")).recognised is False
+    assert parse_script(cfg, body("findings-as-table.md")) is None
+
+
+def test_a_lead_paragraph_under_a_prose_line_is_still_a_finding(cfg):
+    """Prose before it must not swallow the finding glued underneath."""
+    findings = parse_script(cfg, body("prose-then-lead.md"))
+    assert len(findings) == 2
+    assert findings[0]["file"] == "src/Foo.kt"
+    assert findings[1]["file"] == "src/Bar.kt"
+
+
+def test_a_path_beats_a_bare_filename_quoted_in_the_prose(cfg):
+    """`README.md` named in passing must not outrank the file being reported."""
+    review = textwrap.dedent("""
+        <details>
+        <summary>🟡 Maintenance</summary>
+
+        * As `README.md` explains, the handler in `src/api/client.py` has no
+          timeout, so a slow upstream holds the worker open indefinitely.
+
+        </details>
+
+        **Verdict:** changes requested.
+    """)
+    assert parse_script(cfg, review)[0]["file"] == "src/api/client.py"

@@ -55,6 +55,11 @@ LEAD_RE = re.compile(r"^\s{0,3}\*\*\S")
 # A summary table at the end of a review counts findings, it does not make them.
 # Its rows must never become findings of their own.
 TABLE_RE = re.compile(r"^\s{0,3}\|")
+# A fenced block belongs to the finding it sits in, whatever its lines start with.
+# Without this, every `-` and `+` line of a suggested diff is read as a bullet.
+FENCE_RE_LINE = re.compile(r"^\s{0,3}(?:```|~~~)")
+# An indented line after a blank one is the rest of the list item above it, not a new paragraph.
+INDENT_RE = re.compile(r"^\s{2,}\S")
 
 MAX_SUMMARY = 120
 # Below this, a bolded lead is a location (`**Foo.kt:43**`) rather than a statement of the problem, so the sentence after it is folded in.
@@ -227,31 +232,46 @@ def _file_of(text: str, pattern: re.Pattern | None = None) -> str | None:
         match = pattern.search(text)
         return (match.group(1) if match.groups() else match.group(0)) if match else None
     for candidates in (PAREN_PATH_RE.finditer(text), BACKTICK_RE.finditer(text)):
-        for match in candidates:
-            path = _as_path(match.group(1))
-            if path:
-                return path
+        paths = [path for match in candidates if (path := _as_path(match.group(1)))]
+        if not paths:
+            continue
+        # Within one tier, a token carrying a directory separator is the file being reported; a bare `README.md` is usually prose naming a file.
+        return next((p for p in paths if "/" in p or "\\" in p), paths[0])
     return None
 
 
 def _has_content(block: str, grammar: Grammar) -> bool:
-    """Anything in this section that a finding could have been made out of."""
+    """Anything in this section that a finding could have been made out of.
+
+    Table rows count here even though `_units` never makes findings out of them: a section written entirely as a table is one we have no rule for, not one that is empty.
+    Only `grammar.empty` — "None." — makes a section genuinely empty.
+    """
     if grammar.empty.search(block):
         return False
-    return any(line.strip() and not TABLE_RE.match(line) for line in block.splitlines())
+    return any(line.strip() for line in block.splitlines())
+
+
+def _continues(lines: list[str], index: int) -> bool:
+    """Whether the blank line at `index` sits inside a list item rather than after it."""
+    for line in lines[index + 1 :]:
+        if not line.strip():
+            continue
+        return bool(INDENT_RE.match(line)) and not TABLE_RE.match(line)
+    return False
 
 
 def _units(block: str, grammar: Grammar) -> list[str]:
     """One entry per finding: a bullet or a lead-bolded paragraph, folded.
 
-    A paragraph that opens with neither is prose about the section rather than a finding, and is skipped along with its continuation lines.
+    A paragraph that opens with neither is prose about the section rather than a finding, and is skipped along with its continuation lines — except a bolded lead, which starts a finding whatever preceded it.
     Table rows are skipped outright.
+    Fenced blocks are held whole: a suggested diff is part of its finding, not a run of bullets.
     """
     if grammar.empty.search(block):
         return []
     units: list[str] = []
     current: list[str] | None = None
-    ignoring = False
+    fenced = False
 
     def flush() -> None:
         nonlocal current
@@ -261,27 +281,33 @@ def _units(block: str, grammar: Grammar) -> list[str]:
                 units.append(text)
         current = None
 
-    for line in block.splitlines():
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
         stripped = line.strip()
+        fence = bool(FENCE_RE_LINE.match(line))
+        if fence:
+            fenced = not fenced
+        if fence or fenced:
+            if current is not None:
+                # Kept as written: indentation is the point of a fenced block.
+                current.append(line.rstrip())
+            continue
         if not stripped or TABLE_RE.match(line):
+            if not stripped and current is not None and _continues(lines, index):
+                current.append("")
+                continue
             flush()
-            ignoring = False
             continue
         bullet = grammar.bullet.match(line)
         if bullet:
             flush()
-            ignoring = False
             current = [line[bullet.end() :].strip()]
             continue
         if current is not None:
             current.append(stripped)
             continue
-        if ignoring:
-            continue
         if grammar.lead.match(line):
             current = [stripped]
-        else:
-            ignoring = True
     flush()
     return units
 

@@ -38,7 +38,10 @@ def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[di
     Only findings still `open` count toward the fingerprint set: a finding
     that was resolved or marked wontfix and then re-raised (because the fix
     was actually wrong) must get a fresh entry rather than being silently
-    dropped as a duplicate."""
+    dropped as a duplicate.
+
+    Both fingerprint fields are derived by the parser, so a store written by an older grammar re-adds its still-open script-parsed findings once on the first collect after the upgrade.
+    It settles from there."""
     known = {
         _fingerprint(f)
         for f in store.read_findings(pr_ref)["findings"]
