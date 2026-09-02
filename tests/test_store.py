@@ -303,9 +303,8 @@ def test_locks_stay_at_the_top_level(store):
 
 
 def test_a_log_that_could_not_be_moved_keeps_its_working_recorded_path(tmp_path):
-    """A log whose destination is taken is not moved, so its record must not be
-    rewritten to name the file that won: that would point the step at another
-    run's output, which no later read could tell from the real thing."""
+    """A log whose destination is taken is not moved, so its record must not be rewritten to name the file that won.
+    That would point the step at another run's output, which no later read could tell from the real thing."""
     root = tmp_path / "store"
     write_old_layout(root)
     kept = root / "tickets" / "ABC-123" / "logs"
@@ -340,9 +339,8 @@ def test_a_stray_file_in_the_old_logs_directory_is_reported(tmp_path, capsys):
 
 
 def test_a_migration_that_left_something_behind_still_settles(tmp_path):
-    """Re-opening a store that could not be fully migrated must not keep
-    rewriting it: the leftovers block the old directories from being pruned, so
-    migration runs again on every open."""
+    """Re-opening a store that could not be fully migrated must not keep rewriting it.
+    The leftovers block the old directories from being pruned, so migration runs again on every open."""
     root = tmp_path / "store"
     write_old_layout(root)
     (root / "logs" / "stray.log").write_text("whose?")
@@ -380,8 +378,7 @@ def test_findings_land_in_the_ticket_that_is_named(store):
 
 
 def test_findings_written_before_their_pr_are_not_orphaned(store):
-    """`add_findings` mints ids, so a findings document that ends up somewhere
-    the next read does not look restarts at f01 and re-uses ids."""
+    """`add_findings` mints ids, so a findings document that ends up somewhere the next read does not look restarts at f01 and re-uses ids."""
     store.add_findings("acme/api#115", [{"summary": "a"}], key="ABC-123")
     store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
     assert store.add_findings("acme/api#115", [{"summary": "b"}]) == ["f02"]

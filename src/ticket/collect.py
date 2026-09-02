@@ -128,8 +128,7 @@ def collect(
             "findings": [],
         }
 
-        # Named, not looked up: this runs before `write_pr` below, so on a
-        # first collection there is no PR document on disk to find the key in.
+        # Named, not looked up: this runs before `write_pr` below, so on a first collection there is no PR document on disk to find the key in.
         record["findings"] = store.add_findings(pr_ref, findings, ticket["key"])
         pr.setdefault("collected", []).append(record)
         # Written per source, not once at the end: a failure on a later source

@@ -187,8 +187,7 @@ class Store:
         if doc is not None:
             return doc
         fresh = {"pr": pr_ref, "next_id": 1, "findings": []}
-        # The document records its ticket, so every later read of it agrees on
-        # where it lives without having to find the PR document first.
+        # The document records its ticket, so every later read of it agrees on where it lives without having to find the PR document first.
         if key:
             fresh["key"] = key
         return fresh
@@ -201,10 +200,8 @@ class Store:
     ) -> list[str]:
         """Append findings, minting `fNN` ids. The only place an id is assigned.
 
-        `key` names the ticket the PR belongs to. Without it the document's
-        place is a lookup over what is on disk, and findings written before the
-        PR document lands in `_unkeyed`, where the next read does not look --
-        which restarts `next_id` and re-uses ids that are already out.
+        `key` names the ticket the PR belongs to.
+        Without it the document's place is a lookup over what is on disk, and findings written before the PR document lands in `_unkeyed`, where the next read does not look — which restarts `next_id` and re-uses ids that are already out.
         """
         doc = self.read_findings(pr_ref, key)
         assigned: list[str] = []
@@ -284,11 +281,11 @@ def _where(root: Path, path: Path) -> str:
 def migrate(root: Path) -> None:
     """Move a type-grouped store into the by-key layout, in place.
 
-    Nothing is deleted -- files move, empty directories go, and a file whose destination is taken stays put.
+    Nothing is deleted — files move, empty directories go, and a file whose destination is taken stays put.
     Anything left behind is named on stderr: it is invisible to every later read, so silence would be the store quietly losing it.
 
     Idempotent: it does nothing at all once there is no `prs/`, `findings/` or `logs/` directory and no loose `tickets/*.json`.
-    A store it could not place everything in keeps one of those, so it runs again on every open -- and says the same thing again, which is the point.
+    A store it could not place everything in keeps one of those, so it runs again on every open — and says the same thing again, which is the point.
     """
     if not root.is_dir() or not _needs_migration(root):
         return
@@ -385,7 +382,7 @@ def _rewrite_log_paths(tickets: Path, placed: set[tuple[str, str]]) -> None:
     """Point every log that actually moved at its new home, relative to the store root.
 
     Only the file name survives the move, which is all that identifies a log: they were always `<store>/logs/<KEY>/<name>` and are now `tickets/<KEY>/logs/<name>`.
-    Only `placed` is rewritten. A log the migration could not move is still at the path its step records, and rewriting it would name the file that won the destination instead -- a step pointing at another run's output, which nothing downstream could tell from the real thing.
+    Only `placed` is rewritten. A log the migration could not move is still at the path its step records, and rewriting it would name the file that won the destination instead — a step pointing at another run's output, which nothing downstream could tell from the real thing.
     """
     for path in sorted(tickets.glob("*/state.json")):
         doc = _load(path)
