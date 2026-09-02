@@ -1,11 +1,10 @@
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import dead_pid, write_lock
 from ticket.errors import StoreError
 from ticket.store import Store, pr_slug
 
@@ -410,13 +409,6 @@ def test_an_empty_no_migrate_setting_does_not_count(tmp_path, monkeypatch):
 # --- clearing a lock a dead run left behind (issue #27) --------------------
 
 
-def dead_pid() -> int:
-    """A pid that has certainly exited: one we started and reaped ourselves."""
-    process = subprocess.Popen([sys.executable, "-c", ""])
-    process.wait()
-    return process.pid
-
-
 def test_lock_status_is_none_when_nothing_holds_the_key(store):
     assert store.lock_status("ABC-123") is None
 
@@ -429,26 +421,20 @@ def test_lock_status_reports_a_live_holder(store):
 
 
 def test_lock_status_reports_a_dead_holder(store):
-    path = store.root / "locks" / "ABC-123.lock"
-    path.parent.mkdir(parents=True)
-    path.write_text(f"{dead_pid()}\n")
+    write_lock(store, f"{dead_pid()}\n")
     assert store.lock_status("ABC-123").alive is False
 
 
 def test_an_unreadable_pid_is_not_taken_for_a_live_run(store):
     """A run killed between creating the file and writing its pid leaves an
     empty one. Unknown is not the same as alive, and the file is still stale."""
-    path = store.root / "locks" / "ABC-123.lock"
-    path.parent.mkdir(parents=True)
-    path.write_text("")
+    write_lock(store, "")
     status = store.lock_status("ABC-123")
     assert status.pid is None
     assert status.alive is False
 
 
 def test_clear_lock_removes_the_file(store):
-    path = store.root / "locks" / "ABC-123.lock"
-    path.parent.mkdir(parents=True)
-    path.write_text("1\n")
+    path = write_lock(store, "1\n")
     store.clear_lock("ABC-123")
     assert not path.exists()

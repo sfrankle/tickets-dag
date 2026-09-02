@@ -11,7 +11,7 @@ import os
 import re
 import subprocess
 import sys
-from contextlib import ExitStack
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,13 +81,9 @@ def tee(
     """Run, streaming output to the terminal and to `log` as it arrives, and collecting it.
 
     A handoff can run for twenty minutes; capturing silently and printing at the
-    end is the wrong experience for the one step a human actually watches.
-
-    The same argument applies to the file. Written once after the process exits,
-    a run that is killed or dies with its terminal leaves no log at all, and
-    there is nothing on disk to watch while it is still going (issue #27).
-    So the file is opened before the first line and each line is flushed as it
-    arrives: an interrupted run keeps everything it printed up to the interrupt.
+    end is the wrong experience for the one step a human actually watches, and a
+    log written only after the process exits leaves nothing behind for a run
+    that is killed or dies with its terminal (issue #27).
     """
     process = subprocess.Popen(
         argv,
@@ -107,14 +103,9 @@ def tee(
         # below are the real story; the failed write is not.
         pass
     lines: list[str] = []
-    with ExitStack() as stack:
-        # buffering=1 is line buffering, so a reader tailing the file sees each
-        # line as the step prints it rather than a block at a time.
-        handle = (
-            stack.enter_context(open(log, "w", buffering=1))
-            if log is not None
-            else None
-        )
+    # buffering=1 is line buffering, so an interrupted run keeps what it printed
+    # and a reader tailing the file sees each line as the step prints it.
+    with open(log, "w", buffering=1) if log is not None else nullcontext() as handle:
         for line in process.stdout:
             lines.append(line)
             sys.stdout.write(line)

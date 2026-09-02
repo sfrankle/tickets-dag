@@ -8,13 +8,13 @@ The model is: config declares a stage, the store only records what has happened 
 
 import json
 import os
-import subprocess
-import sys
 import textwrap
 
 import pytest
 
+from tests.conftest import dead_pid, write_lock
 from ticket.cli import main
+from ticket.store import Store
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -338,28 +338,19 @@ def test_log_rejects_a_step_config_does_not_declare(tracked, capsys):
 # --- clearing a lock a dead run left behind (issue #27) --------------------
 
 
-def lock_path(env, key="ABC-123"):
-    return env / "store" / "locks" / f"{key}.lock"
-
-
-def write_lock(env, contents, key="ABC-123"):
-    path = lock_path(env, key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents)
-    return path
+def locks(env):
+    return Store(env / "store")
 
 
 def test_unlock_clears_a_lock_whose_run_is_gone(tracked, capsys):
-    process = subprocess.Popen([sys.executable, "-c", ""])
-    process.wait()
-    path = write_lock(tracked, f"{process.pid}\n")
+    path = write_lock(locks(tracked), f"{dead_pid()}\n")
     assert main(["unlock", "ABC-123"]) == 0
     assert not path.exists()
     assert "cleared" in capsys.readouterr().out
 
 
 def test_unlock_refuses_while_the_run_is_still_alive(tracked, capsys):
-    path = write_lock(tracked, f"{os.getpid()}\n")
+    path = write_lock(locks(tracked), f"{os.getpid()}\n")
     assert main(["unlock", "ABC-123"]) == 1
     assert path.exists(), "a live run's lock must survive"
     err = capsys.readouterr().err
@@ -372,8 +363,6 @@ def test_unlock_says_so_when_there_is_no_lock(tracked, capsys):
 
 
 def test_unlock_does_not_take_the_lock_it_is_clearing(tracked, capsys):
-    """`unlock` is the way out of a stale lock, so it cannot be a WRITE_VERB:
-    taking the lock first would fail on exactly the lock it exists to clear."""
-    write_lock(tracked, "")
+    path = write_lock(locks(tracked), "")
     assert main(["unlock", "ABC-123"]) == 0
-    assert not lock_path(tracked).exists()
+    assert not path.exists()

@@ -1,5 +1,6 @@
 import json
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +14,21 @@ FAKE_TOOL = Path(__file__).parent / "fakes" / "fake_tool.py"
 @pytest.fixture
 def store(tmp_path):
     return Store(tmp_path / "store")
+
+
+def dead_pid() -> int:
+    """A pid that has certainly exited: one we started and reaped ourselves."""
+    process = subprocess.Popen([sys.executable, "-c", ""])
+    process.wait()
+    return process.pid
+
+
+def write_lock(store: Store, contents: str, key: str = "ABC-123") -> Path:
+    """Plant a lock file the way a run that died would have left it."""
+    path = store.lock_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents)
+    return path
 
 
 class FakeBin:

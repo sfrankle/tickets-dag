@@ -244,16 +244,15 @@ class Store:
         if not path.exists():
             return None
         pid = _lock_pid(path)
-        return LockStatus(path=path, pid=pid, alive=pid is not None and _alive(pid))
+        return LockStatus(pid=pid)
 
     def clear_lock(self, key: str) -> None:
         self.lock_path(key).unlink(missing_ok=True)
 
     @contextmanager
     def lock(self, key: str):
-        directory = self.root / "locks"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{key}.lock"
+        path = self.lock_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -276,9 +275,11 @@ class Store:
 
 @dataclass(frozen=True)
 class LockStatus:
-    path: Path
     pid: int | None
-    alive: bool
+
+    @property
+    def alive(self) -> bool:
+        return self.pid is not None and _alive(self.pid)
 
 
 def _lock_pid(path: Path) -> int | None:
@@ -308,7 +309,7 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass
     return True
 
 
