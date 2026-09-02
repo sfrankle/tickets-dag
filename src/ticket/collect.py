@@ -5,6 +5,12 @@ to run repeatedly. Sources we did not dispatch — humans, review-bot, other
 required agents — are recorded with `review: null` and an author. They are
 tracked fully; they are simply not in the config.
 
+What decides that is the script parser's two empty answers, which do not mean the same thing (issue #23).
+`[]` is a review of ours that found nothing: it ran, it answered its dispatch, and it takes that dispatch's collected slot — an all-clear review claiming no slot would leave its dispatch outstanding forever and wedge `next` on a `collect` that can never clear.
+`None` is a body we could not read as a review at all: it answered nothing, so it claims nothing.
+Attribution is positional — `next_uncollected` in dispatch order, because a dispatch record carries no author to match a body against — and it happens once, on the first read.
+`set_review` is the way back: a body that fell back to Haiku leaves its dispatch uncollected forever, and nothing on disk can say which dispatch that was, so the operator reading the review supplies it.
+
 A source id in `collected` is normally skipped, with two exceptions (issue #10):
 
   * a record that produced no findings is re-parsed on every run, so a parser that has since learned to read that body recovers its findings instead of the source being unreachable forever.
@@ -20,6 +26,7 @@ It reads what is on the PR at the moment it runs and returns; a review that has 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from . import gh
@@ -79,6 +86,55 @@ def outstanding(pr: dict) -> str | None:
     return next_uncollected(pr)
 
 
+def set_review(store: Store, pr: dict, source_id: str, review_id: str | None) -> dict:
+    """Say by hand which dispatch a collected source answered.
+
+    Attribution is positional and happens once, on the first read, so a body the script parser could not read is recorded with `review: null` and stays that way: which dispatch it answered is not in the record, and a re-read can only ask what is outstanding *now*, which would consume a newer dispatch's slot.
+    That leaves the original dispatch uncollected and `next` asking for a `collect` that can never clear, so the operator — who can read the body — supplies the attribution the record could not keep.
+    `None` is the other direction, for a record that took a slot it should not have.
+    """
+    record = next(
+        (c for c in pr.get("collected") or [] if c.get("source_id") == source_id), None
+    )
+    if record is None:
+        raise TicketError(f"{source_id} has not been collected on {pr['pr']}")
+    if review_id is not None:
+        # Counted, not set: a review is re-dispatched once the head moves, so
+        # the third dispatch of `docs-tests` has a free slot even though two
+        # records already name it. This is `_uncollected`'s arithmetic, asked
+        # about one review.
+        dispatches = sum(
+            1 for d in pr.get("dispatched") or [] if d.get("review") == review_id
+        )
+        if not dispatches:
+            raise TicketError(f"{review_id} was never dispatched on {pr['pr']}")
+        claims = Counter(
+            c.get("review")
+            for c in pr.get("collected") or []
+            if c.get("source_id") != source_id
+        )
+        if claims[review_id] >= dispatches:
+            raise TicketError(
+                f"every dispatch of {review_id} on {pr['pr']} is already collected"
+            )
+    record["review"] = review_id
+    record["attributed_at"] = now()
+    # The findings carry their own copy of the attribution, so leaving those
+    # behind would have `ticket findings` and `ticket reviews` disagree about
+    # where a finding came from.
+    doc = store.read_findings(pr["pr"], pr.get("key"))
+    touched = False
+    for finding in doc["findings"]:
+        source = finding.get("source") or {}
+        if source.get("source_id") == source_id:
+            source["review"] = review_id
+            touched = True
+    if touched:
+        store.write_findings(doc)
+    store.write_pr(pr)
+    return record
+
+
 def collect(
     cfg: Config,
     store: Store,
@@ -126,10 +182,18 @@ def collect(
             # The body is still unreadable (or genuinely empty, an all-clear review), so there is nothing to recover and no reason to buy a Haiku call for it on this run and every run after it.
             continue
 
-        # A re-read keeps the review its record already claimed: the record occupies that review's collected slot, so asking `next_uncollected` again would hand out a second one.
-        review_id = (prior or {}).get("review")
-        if review_id is None and script_findings is not None:
+        # Attribution happens once, on the first read, and never again.
+        # A re-read keeps whatever its record claimed — `null` included, which is a decision already made ("nothing we dispatched") rather than a value still missing.
+        # Asking `next_uncollected` on a re-read returns whatever is outstanding *now*, which for a `null` record is a dispatch that body cannot have answered: it would consume that newer dispatch's slot and leave the genuine result to arrive as "not one of ours".
+        # Which dispatch an unrecognised body did answer is not recoverable — attribution is positional, and the record did not keep it — so it stays null rather than being guessed.
+        if prior is not None:
+            review_id = prior.get("review")
+        elif script_findings is not None:
+            # `[]` is a review of ours that found nothing: it answered its dispatch and occupies that dispatch's slot.
+            # Only `None` — a body the script parser could not read as a review at all — claims nothing.
             review_id = next_uncollected(pr)
+        else:
+            review_id = None
 
         if dry_run:
             # Stop before the parser: a dry run must not spend a Haiku call on

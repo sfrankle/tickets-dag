@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ticket.collect import collect, outstanding
+from ticket.collect import collect, outstanding, set_review
 from ticket.config import load_config
 from ticket.errors import TicketError
 
@@ -523,3 +523,251 @@ def test_a_re_read_that_recovers_nothing_stays_quiet(cfg, store, fake_bin, capsy
     collected = store.read_pr("acme/api#115")["collected"]
     assert [c["findings"] for c in collected] == [[], ["f01", "f02", "f03"]]
     assert "reread_at" not in collected[0]
+
+
+def two_dispatches_pr(store, collected):
+    """A PR with two dispatches outstanding and one existing collection record."""
+    store.write_pr(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "head": "9c1f0ab",
+            "dispatched": [
+                {
+                    "review": "docs-tests",
+                    "at": "t",
+                    "head": "9c1f0ab",
+                    "transport": "bot",
+                },
+                {"review": "perf", "at": "t", "head": "9c1f0ab", "transport": "bot"},
+            ],
+            "collected": [collected],
+            "skipped": [],
+        }
+    )
+
+
+def test_a_re_read_of_a_null_review_record_claims_no_slot(cfg, store, fake_bin):
+    """`review: null` is a decision already made — this body answered no dispatch we know of.
+    A re-read must not ask `next_uncollected` again: it would hand back whatever is outstanding *now*, which is a dispatch this body cannot have answered."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": [],
+        },
+    )
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "example-review.md").read_text()),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    records = collect(cfg, store, ticket_doc(), "acme/api#115")
+    assert records[0]["review"] is None
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_recollecting_a_null_review_record_claims_no_slot(cfg, store, fake_bin):
+    """Same contract by the other entry point: naming a source for a forced re-read does not re-attribute it."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "example-review.md").read_text()),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    records = collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_1"])
+    assert records[0]["review"] is None
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_attributing_a_null_record_by_hand_clears_its_dispatch(store):
+    """The way out of the wedge the two tests above describe.
+    Attribution a re-read must not guess is one a person can read off the review, so `set_review` is where they say it."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    pr = store.read_pr("acme/api#115")
+    set_review(store, pr, "PRR_1", "docs-tests")
+    assert store.read_pr("acme/api#115")["collected"][0]["review"] == "docs-tests"
+    assert outstanding(store.read_pr("acme/api#115")) == "perf"
+
+
+def test_attribution_carries_to_the_findings_that_source_minted(store):
+    """`ticket findings` reads the copy on the finding, so the two would otherwise disagree about where it came from."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    store.write_findings(
+        {
+            "pr": "acme/api#115",
+            "key": "ABC-123",
+            "next_id": 3,
+            "findings": [
+                {
+                    "id": "f01",
+                    "status": "open",
+                    "source": {
+                        "kind": "review",
+                        "review": None,
+                        "source_id": "PRR_1",
+                    },
+                },
+                {
+                    "id": "f02",
+                    "status": "open",
+                    "source": {
+                        "kind": "review",
+                        "review": None,
+                        "source_id": "PRR_9",
+                    },
+                },
+            ],
+        }
+    )
+    set_review(store, store.read_pr("acme/api#115"), "PRR_1", "docs-tests")
+    findings = store.read_findings("acme/api#115")["findings"]
+    assert findings[0]["source"]["review"] == "docs-tests"
+    # A different source id is left alone.
+    assert findings[1]["source"]["review"] is None
+
+
+def test_attribution_can_be_taken_back(store):
+    """The other direction: a record that took a slot it should not have gives it back."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": "docs-tests",
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    set_review(store, store.read_pr("acme/api#115"), "PRR_1", None)
+    assert store.read_pr("acme/api#115")["collected"][0]["review"] is None
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_attributing_to_a_review_that_is_fully_collected_is_an_error(store):
+    """Attribution is a slot, and a dispatch has one result. Two records naming one dispatch would make `_uncollected` count a review as answered twice."""
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": "docs-tests",
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    pr = store.read_pr("acme/api#115")
+    pr["collected"].append(
+        {
+            "source_id": "PRR_2",
+            "review": None,
+            "author": "someone",
+            "at": "t",
+            "findings": ["f02"],
+        }
+    )
+    store.write_pr(pr)
+    with pytest.raises(TicketError, match="already collected"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_2", "docs-tests")
+
+
+def test_attributing_to_an_undispatched_review_is_an_error(store):
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    with pytest.raises(TicketError, match="never dispatched"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_1", "security")
+
+
+def test_attributing_an_uncollected_source_is_an_error(store):
+    two_dispatches_pr(
+        store,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": ["f01"],
+        },
+    )
+    with pytest.raises(TicketError, match="has not been collected"):
+        set_review(store, store.read_pr("acme/api#115"), "PRR_7", "docs-tests")
+
+
+def test_an_all_clear_review_answers_its_dispatch(cfg, store, fake_bin):
+    """`[]` from the script parser means ours, and it found nothing (issue #23 item 1).
+    A reviewer that ran and had nothing to say has answered its dispatch, so it takes that dispatch's collected slot and stops being outstanding — otherwise `next` asks for a `collect` that can never clear."""
+    seeded_pr(store)
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "all-clear.md").read_text()),
+    )
+    records = collect(cfg, store, ticket_doc(), "acme/api#115")
+    assert records[0]["review"] == "docs-tests"
+    assert records[0]["findings"] == []
+    assert outstanding(store.read_pr("acme/api#115")) is None
+    assert fake_bin.calls_to("claude") == []
+
+
+def test_a_body_the_parser_cannot_read_answers_no_dispatch(cfg, store, fake_bin):
+    """The other half of the same contract: `None` is a body we could not read as a review at all, so it claims no slot and the dispatch stays outstanding."""
+    seeded_pr(store)
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload(
+            (FIXTURES / "human-comment.md").read_text(), author="sfrankle"
+        ),
+    )
+    fake_bin.respond(
+        "claude",
+        stdout=json.dumps(
+            [
+                {
+                    "severity": "blocking",
+                    "summary": "429 spin",
+                    "body": "...",
+                    "file": "src/api/retry.py",
+                }
+            ]
+        ),
+    )
+    records = collect(cfg, store, ticket_doc(), "acme/api#115")
+    assert records[0]["review"] is None
+    assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"

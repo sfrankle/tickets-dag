@@ -658,6 +658,47 @@ def test_collect_still_marks_a_foreign_source_when_we_dispatched_something(
     assert "not one of ours" in capsys.readouterr().out
 
 
+def test_attribute_unwedges_a_dispatch_recorded_as_none_of_ours(env, fake_bin, capsys):
+    """The whole cycle: a body we could not read is collected as none of ours, `docs-tests` stays outstanding no matter how often collect runs, and `attribute` is what clears it."""
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "review-bot"},
+                    "body": (FIXTURES / "human-comment.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
+    )
+    fake_bin.respond("claude", stdout=json.dumps([]))
+    main(["collect", "ABC-123"])
+    capsys.readouterr()
+
+    # The source id `attribute` needs is in the PR document `--json` dumps.
+    assert main(["reviews", "ABC-123", "--json"]) == 0
+    assert "PRR_1" in capsys.readouterr().out
+
+    assert main(["collect", "ABC-123"]) == 0
+    assert "not collected yet" in capsys.readouterr().out
+
+    assert main(["attribute", "ABC-123", "PRR_1", "docs-tests"]) == 0
+    assert "PRR_1: docs-tests" in capsys.readouterr().out
+    assert main(["collect", "ABC-123"]) == 0
+    assert "not collected yet" not in capsys.readouterr().out
+
+
+def test_attribute_rejects_a_review_that_is_not_in_config(env, fake_bin, capsys):
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    assert main(["attribute", "ABC-123", "PRR_1", "not-a-review"]) != 0
+    assert "unknown review" in capsys.readouterr().err
+
+
 def test_collect_says_it_is_not_waiting_for_an_outstanding_review(
     env, fake_bin, capsys
 ):
@@ -669,6 +710,15 @@ def test_collect_says_it_is_not_waiting_for_an_outstanding_review(
     out = capsys.readouterr().out
     assert "not waiting" in out
     assert "docs-tests" in out
+    # `outstanding` counts dispatches against collection records carrying that
+    # review id, so it means "not collected yet", which is true whether the
+    # review has yet to post or posted and was recorded as none of ours.
+    # "collect again once it posts" answers only the first, so the line has to
+    # name the remedy for the second too — running collect again never clears it.
+    assert "not collected yet" in out
+    assert "once it posts" in out
+    assert "ticket attribute ABC-123 <source-id> docs-tests" in out
+    assert "ticket skip docs-tests" in out
 
 
 def test_collect_recollect_re_reads_a_named_source(env, fake_bin, capsys):
