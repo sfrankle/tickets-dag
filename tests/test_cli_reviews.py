@@ -669,6 +669,13 @@ def test_collect_says_it_is_not_waiting_for_an_outstanding_review(
     out = capsys.readouterr().out
     assert "not waiting" in out
     assert "docs-tests" in out
+    # `outstanding` counts dispatches against collection records carrying that
+    # review id, so it means "not collected yet", which is true whether the
+    # review has yet to post or posted and was recorded as none of ours.
+    # "once it posts" is only true of the first, and running collect again
+    # never clears the second.
+    assert "not collected yet" in out
+    assert "once it posts" not in out
 
 
 def test_collect_recollect_re_reads_a_named_source(env, fake_bin, capsys):

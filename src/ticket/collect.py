@@ -5,6 +5,11 @@ to run repeatedly. Sources we did not dispatch — humans, review-bot, other
 required agents — are recorded with `review: null` and an author. They are
 tracked fully; they are simply not in the config.
 
+What decides that is the script parser's two empty answers, which do not mean the same thing (issue #23).
+`[]` is a review of ours that found nothing: it ran, it answered its dispatch, and it takes that dispatch's collected slot — an all-clear review claiming no slot would leave its dispatch outstanding forever and wedge `next` on a `collect` that can never clear.
+`None` is a body we could not read as a review at all: it answered nothing, so it claims nothing.
+Attribution is positional — `next_uncollected` in dispatch order, because a dispatch record carries no author to match a body against — and it happens once, on the first read.
+
 A source id in `collected` is normally skipped, with two exceptions (issue #10):
 
   * a record that produced no findings is re-parsed on every run, so a parser that has since learned to read that body recovers its findings instead of the source being unreachable forever.
@@ -126,10 +131,18 @@ def collect(
             # The body is still unreadable (or genuinely empty, an all-clear review), so there is nothing to recover and no reason to buy a Haiku call for it on this run and every run after it.
             continue
 
-        # A re-read keeps the review its record already claimed: the record occupies that review's collected slot, so asking `next_uncollected` again would hand out a second one.
-        review_id = (prior or {}).get("review")
-        if review_id is None and script_findings is not None:
+        # Attribution happens once, on the first read, and never again.
+        # A re-read keeps whatever its record claimed — `null` included, which is a decision already made ("nothing we dispatched") rather than a value still missing.
+        # Asking `next_uncollected` on a re-read returns whatever is outstanding *now*, which for a `null` record is a dispatch that body cannot have answered: it would consume that newer dispatch's slot and leave the genuine result to arrive as "not one of ours".
+        # Which dispatch an unrecognised body did answer is not recoverable — attribution is positional, and the record did not keep it — so it stays null rather than being guessed.
+        if prior is not None:
+            review_id = prior.get("review")
+        elif script_findings is not None:
+            # `[]` is a review of ours that found nothing: it answered its dispatch and occupies that dispatch's slot.
+            # Only `None` — a body the script parser could not read as a review at all — claims nothing.
             review_id = next_uncollected(pr)
+        else:
+            review_id = None
 
         if dry_run:
             # Stop before the parser: a dry run must not spend a Haiku call on

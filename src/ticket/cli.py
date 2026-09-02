@@ -489,7 +489,9 @@ def cmd_collect(args) -> int:
             print(f"collected {source}: {len(record['findings'])} findings")
     pending = collect_module.outstanding(pr)
     if pending:
-        print(f"not waiting for {pending}: run collect again once it posts")
+        # `outstanding` counts dispatches against collection records carrying that review id, so what it reports is "not collected yet" — true both of a review that has yet to post and of one that posted and was recorded as none of ours.
+        # Saying "once it posts" is only true of the first, and for the second running collect again never clears it.
+        print(f"not waiting for {pending}: not collected yet")
     return 0
 
 
