@@ -102,6 +102,7 @@ class Store:
         """How a path is recorded in state: relative to the store root.
 
         Recorded absolute, a log path stops resolving as soon as the store moves, and nothing re-checks it (issue #7).
+        A path outside the root is returned absolute, since there is nothing to record it relative to; every log the store itself writes is inside.
         """
         path = Path(path)
         try:
@@ -286,7 +287,12 @@ def migrate(root: Path) -> None:
 
     Idempotent: it does nothing at all once there is no `prs/`, `findings/` or `logs/` directory and no loose `tickets/*.json`.
     A store it could not place everything in keeps one of those, so it runs again on every open — and says the same thing again, which is the point.
+
+    `TICKET_NO_MIGRATE` turns it off, for looking at an old store without rewriting it.
+    Every read then goes to the by-key layout and finds nothing, so the store reads as empty rather than as it was.
     """
+    if os.environ.get("TICKET_NO_MIGRATE", "") not in ("", "0"):
+        return
     if not root.is_dir() or not _needs_migration(root):
         return
 

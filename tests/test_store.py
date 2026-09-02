@@ -382,3 +382,23 @@ def test_findings_written_before_their_pr_are_not_orphaned(store):
     store.add_findings("acme/api#115", [{"summary": "a"}], key="ABC-123")
     store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
     assert store.add_findings("acme/api#115", [{"summary": "b"}]) == ["f02"]
+
+
+def test_migration_can_be_turned_off(tmp_path, monkeypatch, capsys):
+    """Opening a store rewrites it, which is not always what someone wants at that moment."""
+    root = tmp_path / "store"
+    write_old_layout(root)
+    monkeypatch.setenv("TICKET_NO_MIGRATE", "1")
+    store = Store(root)
+
+    assert (root / "tickets" / "ABC-123.json").is_file()
+    assert (root / "prs" / "acme-api-pr115.json").is_file()
+    assert store.read_ticket("ABC-123") is None
+    assert capsys.readouterr().err == ""
+
+
+def test_an_empty_no_migrate_setting_does_not_count(tmp_path, monkeypatch):
+    root = tmp_path / "store"
+    write_old_layout(root)
+    monkeypatch.setenv("TICKET_NO_MIGRATE", "")
+    assert Store(root).read_ticket("ABC-123")["repo"] == "acme/api"

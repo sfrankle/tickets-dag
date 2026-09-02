@@ -96,7 +96,7 @@ def resolve_for(ctx: Context, ticket: dict) -> Action:
     # A missing PR document reads as an empty one: it is only written on the
     # first dispatch, and the first review is due before that.
     pr = (ctx.store.read_pr(pr_ref) or {}) if pr_ref else None
-    findings = ctx.store.read_findings(pr_ref) if pr_ref else None
+    findings = ctx.store.read_findings(pr_ref, ticket["key"]) if pr_ref else None
     return next_action(ctx.cfg, ticket, pr, findings)
 
 
@@ -107,7 +107,9 @@ def _row(ctx: Context, ticket: dict) -> dict:
     inner = scoped(ctx, ticket)
     action = resolve_for(inner, ticket)
     pr_ref = active_pr(ticket)
-    findings = inner.store.read_findings(pr_ref) if pr_ref else {"findings": []}
+    findings = (
+        inner.store.read_findings(pr_ref, ticket["key"]) if pr_ref else {"findings": []}
+    )
     open_findings = [f for f in findings["findings"] if f.get("status") == "open"]
     return {
         "key": ticket["key"],
