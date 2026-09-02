@@ -6,15 +6,19 @@ import pytest
 
 from tests.conftest import dead_pid, write_lock
 from ticket.errors import StoreError
-from ticket.store import Store, pr_slug
+from ticket.store import Store, legacy_pr_slug, pr_slug
 
 
-def test_pr_slug():
-    assert pr_slug("acme/api#115") == "acme-api_115"
+def test_pr_slug_drops_the_owner():
+    assert pr_slug("acme/api#115") == "api_115"
 
 
 def test_pr_slug_does_not_collide_with_a_repo_named_after_a_number():
     assert pr_slug("acme/api-115#7") != pr_slug("acme/api#1157")
+
+
+def test_legacy_pr_slug_is_the_name_older_stores_wrote():
+    assert legacy_pr_slug("acme/api#115") == "acme-api_115"
 
 
 def test_reading_an_absent_ticket_returns_none(store):
@@ -26,15 +30,102 @@ def test_ticket_round_trip(store):
     assert store.read_ticket("ABC-123")["repo"] == "acme/api"
 
 
-def test_list_tickets_is_sorted(store):
-    for key in ("ABC-9", "ABC-10", "ZZZ-1"):
+def test_writing_a_ticket_stamps_when_it_was_updated(store):
+    store.write_ticket({"key": "ABC-123"})
+    assert store.read_ticket("ABC-123")["updated"].endswith("Z")
+
+
+def test_list_tickets_puts_the_most_recently_updated_first(store):
+    for key, updated in (
+        ("ABC-9", "2026-09-01T00:00:00Z"),
+        ("ABC-10", "2026-09-03T00:00:00Z"),
+        ("ZZZ-1", "2026-09-02T00:00:00Z"),
+    ):
         store.write_ticket({"key": key})
+        _stamp(store, key, updated)
+    assert [t["key"] for t in store.list_tickets()] == ["ABC-10", "ZZZ-1", "ABC-9"]
+
+
+def test_list_tickets_breaks_a_tie_on_the_key(store):
+    for key in ("ZZZ-1", "ABC-10", "ABC-9"):
+        store.write_ticket({"key": key})
+        _stamp(store, key, "2026-09-02T00:00:00Z")
     assert [t["key"] for t in store.list_tickets()] == ["ABC-10", "ABC-9", "ZZZ-1"]
+
+
+def test_a_ticket_written_before_updated_existed_sorts_last(store):
+    store.write_ticket({"key": "ABC-9"})
+    store.write_ticket({"key": "ABC-10"})
+    path = store.ticket_dir("ABC-10") / "state.json"
+    doc = json.loads(path.read_text())
+    del doc["updated"]
+    path.write_text(json.dumps(doc))
+    assert [t["key"] for t in store.list_tickets()] == ["ABC-9", "ABC-10"]
+
+
+def _stamp(store, key, updated):
+    """Set a ticket's `updated` behind the store's back: `now()` is per-second, so writes in a test all tie."""
+    path = store.ticket_dir(key) / "state.json"
+    doc = json.loads(path.read_text())
+    doc["updated"] = updated
+    path.write_text(json.dumps(doc))
 
 
 def test_pr_round_trip(store):
     store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
     assert store.read_pr("acme/api#115")["head"] == "9c1f0ab"
+
+
+def test_a_pr_is_written_under_the_short_name(store):
+    store.write_pr({"pr": "acme/api#115", "key": "ABC-123"})
+    assert (store.ticket_dir("ABC-123") / "api_115.json").is_file()
+
+
+def test_a_pr_document_under_the_old_name_is_still_read(store):
+    directory = store.ticket_dir("ABC-123")
+    directory.mkdir(parents=True)
+    (directory / "acme-api_115.json").write_text(
+        json.dumps({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
+    )
+    assert store.read_pr("acme/api#115")["head"] == "9c1f0ab"
+
+
+def test_writing_a_pr_under_the_old_name_updates_it_in_place(store):
+    directory = store.ticket_dir("ABC-123")
+    directory.mkdir(parents=True)
+    (directory / "acme-api_115.json").write_text(
+        json.dumps({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
+    )
+    store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "beefbee"})
+    assert not (directory / "api_115.json").exists()
+    assert store.read_pr("acme/api#115")["head"] == "beefbee"
+
+
+def test_findings_under_the_old_name_are_still_read(store):
+    directory = store.ticket_dir("ABC-123")
+    directory.mkdir(parents=True)
+    (directory / "acme-api_115_findings.json").write_text(
+        json.dumps(
+            {
+                "pr": "acme/api#115",
+                "key": "ABC-123",
+                "next_id": 2,
+                "findings": [{"id": "f01", "status": "open"}],
+            }
+        )
+    )
+    assert store.add_findings("acme/api#115", [{"summary": "b"}]) == ["f02"]
+    assert not (directory / "api_115_findings.json").exists()
+
+
+def test_a_pr_under_the_old_name_still_names_its_ticket(store):
+    directory = store.ticket_dir("ABC-123")
+    directory.mkdir(parents=True)
+    (directory / "acme-api_115.json").write_text(
+        json.dumps({"pr": "acme/api#115", "key": "ABC-123"})
+    )
+    store.add_findings("acme/api#115", [{"summary": "a"}])
+    assert (directory / "api_115_findings.json").is_file()
 
 
 def test_absent_findings_file_reads_as_an_empty_doc(store):
@@ -90,8 +181,8 @@ def test_stored_json_is_human_readable(store):
 def test_reading_corrupt_json_raises_store_error(store):
     for relative in (
         "tickets/ABC-123/state.json",
-        "tickets/ABC-123/acme-api_115.json",
-        "tickets/ABC-123/acme-api_115_findings.json",
+        "tickets/ABC-123/api_115.json",
+        "tickets/ABC-123/api_115_findings.json",
     ):
         path = store.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,13 +235,13 @@ def test_a_ticket_is_a_directory_named_by_its_key(store):
 
 def test_a_pr_document_lives_beside_its_ticket(store):
     store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
-    assert (store.root / "tickets" / "ABC-123" / "acme-api_115.json").is_file()
+    assert (store.root / "tickets" / "ABC-123" / "api_115.json").is_file()
 
 
 def test_findings_live_beside_the_pr_they_belong_to(store):
     store.write_pr({"pr": "acme/api#115", "key": "ABC-123"})
     store.add_findings("acme/api#115", [{"summary": "a"}])
-    expected = store.root / "tickets" / "ABC-123" / "acme-api_115_findings.json"
+    expected = store.root / "tickets" / "ABC-123" / "api_115_findings.json"
     assert expected.is_file()
     assert store.read_findings("acme/api#115")["findings"][0]["id"] == "f01"
 
@@ -159,7 +250,7 @@ def test_findings_follow_the_ticket_that_registered_the_pr(store):
     """The PR document need not exist yet: the ticket already names the PR."""
     store.write_ticket({"key": "ABC-123", "prs": ["acme/api#115"]})
     store.add_findings("acme/api#115", [{"summary": "a"}])
-    assert (store.root / "tickets" / "ABC-123" / "acme-api_115_findings.json").is_file()
+    assert (store.root / "tickets" / "ABC-123" / "api_115_findings.json").is_file()
 
 
 def test_logs_live_under_the_ticket_directory(store):
@@ -257,8 +348,8 @@ def test_an_old_store_is_migrated_on_load(tmp_path):
     assert store.read_findings("acme/api#115")["findings"][0]["id"] == "f01"
     key_dir = root / "tickets" / "ABC-123"
     assert (key_dir / "state.json").is_file()
-    assert (key_dir / "acme-api_115.json").is_file()
-    assert (key_dir / "acme-api_115_findings.json").is_file()
+    assert (key_dir / "api_115.json").is_file()
+    assert (key_dir / "api_115_findings.json").is_file()
     assert (key_dir / "logs" / "evaluate-20260901T120416Z.log").read_text() == "old log"
     assert not (root / "prs").exists()
     assert not (root / "findings").exists()
@@ -374,7 +465,7 @@ def test_a_quiet_migration_says_nothing(store, capsys):
 
 def test_findings_land_in_the_ticket_that_is_named(store):
     store.add_findings("acme/api#115", [{"summary": "a"}], key="ABC-123")
-    placed = store.root / "tickets" / "ABC-123" / "acme-api_115_findings.json"
+    placed = store.root / "tickets" / "ABC-123" / "api_115_findings.json"
     assert placed.is_file()
     assert not (store.root / "tickets" / "_unkeyed").exists()
 
