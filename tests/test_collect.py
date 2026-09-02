@@ -416,3 +416,55 @@ def test_collect_does_not_wait_for_an_outstanding_review(cfg, store, fake_bin):
     fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
     assert collect(cfg, store, ticket_doc(), "acme/api#115") == []
     assert outstanding(store.read_pr("acme/api#115")) == "docs-tests"
+
+
+def test_a_re_read_that_recovers_nothing_stays_quiet(cfg, store, fake_bin, capsys):
+    """review-bot re-posts its unfixed items on every push, so the same findings arrive again under a second source id.
+    Once they are open, re-reading the record that missed them recovers nothing.
+    Recording that as work would leave the record empty, so it would be re-read, rewritten and printed on every run after this one."""
+    seeded_pr(store)
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload(body, review_id="PRR_2"),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    ticket = ticket_doc()
+    collect(cfg, store, ticket, "acme/api#115")
+
+    # The same review, posted on an earlier push and recorded with no findings by the #9 grammar bug.
+    pr = store.read_pr("acme/api#115")
+    pr["collected"].insert(
+        0,
+        {
+            "source_id": "PRR_1",
+            "review": None,
+            "author": "claude-review-bot",
+            "at": "t",
+            "findings": [],
+        },
+    )
+    store.write_pr(pr)
+
+    both = json.dumps(
+        [
+            {
+                "id": source_id,
+                "user": {"login": "claude-review-bot"},
+                "body": body,
+                "submitted_at": "t",
+            }
+            for source_id in ("PRR_1", "PRR_2")
+        ]
+    )
+    fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout=both)
+    capsys.readouterr()
+
+    for _ in range(3):
+        assert collect(cfg, store, ticket, "acme/api#115") == []
+
+    assert "re-read" not in capsys.readouterr().out
+    assert len(store.read_findings("acme/api#115")["findings"]) == 3
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert [c["findings"] for c in collected] == [[], ["f01", "f02", "f03"]]
+    assert "reread_at" not in collected[0]

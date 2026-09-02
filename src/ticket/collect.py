@@ -150,6 +150,13 @@ def collect(
         if findings is None:
             findings = parse_haiku(cfg, source["body"])
         findings = _drop_duplicates(store, pr_ref, findings, ticket["key"])
+
+        if prior is not None and not forced_here and not findings:
+            # An automatic re-read that recovered nothing is a no-op, not work.
+            # review-bot repeats its unfixed items on every push, so a body's findings are often all open already under a later source id — and recording that would leave this record's `findings` empty, which is the very condition that makes it eligible for re-reading, so it would be re-read, rewritten and printed on every run after this one.
+            # A caller who named the source is told what happened either way.
+            continue
+
         assign_effort(cfg, findings)
         for finding in findings:
             finding["source"] = {
