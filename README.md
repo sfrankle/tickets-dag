@@ -92,7 +92,9 @@ ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 A key can carry several PRs, and `--pr` says which one is being worked — on any verb that takes it, including `next`.
 The choice sticks: the commands after it act on that PR too, until something moves the pointer again.
 Nothing here records whether a PR is open, merged or abandoned, so which one to work is a person's call rather than something the engine guesses; the newest registration is only the default.
-A `--dry-run` resolves a `--pr` without moving anything.
+Two things move the pointer without being asked: a step that registers a PR selects it, because opening one is a statement about which PR is being worked, and a `reset` that drops a PR clears a pointer that named it.
+A `--dry-run` resolves a `--pr` without moving anything — including a `--pr` the ticket has never had, which it reports rather than leaving for the real run to discover.
+The move is written once the command it was given to has returned: one rejected for its own reasons, like an unknown review id, leaves every later run where it was.
 
 **The key comes first, always.**
 `run`, `skip` and `release` used to read `<step> <key>` while every other verb read `<key>` first, so `ticket skip ABC-123 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `ticket show` had just called `next` (issue #12).

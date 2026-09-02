@@ -30,7 +30,7 @@ from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, RepoGuess, config_path, load_config
 from .effort import EFFORTS
-from .errors import GhError, TicketError
+from .errors import GhError, StoreError, TicketError
 from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
 from .store import Store, now
 
@@ -51,8 +51,11 @@ def is_safe_key(key: str) -> bool:
 
 
 # Verbs that change something. `main` takes the per-ticket advisory lock around
-# these, so two runs on one ticket cannot interleave writes. A read verb given
-# `--pr` joins them for that run: selecting a PR is a write (see `pick_pr`).
+# these, so two runs on one ticket cannot interleave writes. A read verb stays
+# out, `--pr` or not: naming a PR is how you read the *other* PR's findings,
+# and a `fix` holding the lock for as long as its fixer runs is exactly when
+# someone wants to. The one write such a verb does — the selection itself —
+# takes the lock on its own, for the length of that write (see `pick_pr`).
 WRITE_VERBS = {
     "track",
     "next",
@@ -191,6 +194,13 @@ def pick_pr(ctx: Context, ticket: dict, args) -> str:
     A dry run resolves the ref without moving anything: it is the verb for
     asking what would happen, and answering that question must not change what
     happens next.
+
+    The move is made in memory here and written by `main`, once the verb has
+    returned cleanly. A command rejected for its own reasons — an unknown
+    review id, a `next` that turns out not to be a fix — has done nothing, and
+    silently re-pointing every later run off the back of it is a surprise
+    nobody asked for. The in-memory move happens now regardless, because the
+    run itself has to act on the PR it was given, `TICKET_PR` included.
     """
     prs = ticket.get("prs") or []
     if not prs:
@@ -206,8 +216,50 @@ def pick_pr(ctx: Context, ticket: dict, args) -> str:
     selected = matches[0]
     if not getattr(args, "dry_run", False) and ticket.get("active") != selected:
         ticket["active"] = selected
-        ctx.store.write_ticket(ticket)
+        _defer_selection(ctx.store, ticket)
     return selected
+
+
+# A `--pr` pointer move, held until the verb it was given to has returned
+# cleanly. Module level because `main` is the only place that knows the verb
+# succeeded, and it has no access to the command's `Context`.
+_pending_selection: tuple[Store, dict] | None = None
+
+
+def _defer_selection(store: Store, ticket: dict) -> None:
+    global _pending_selection
+    _pending_selection = (store, ticket)
+
+
+def _clear_selection() -> None:
+    global _pending_selection
+    _pending_selection = None
+
+
+def _commit_selection(*, locked: bool) -> None:
+    """Write the deferred `--pr` selection, if the verb left one.
+
+    `locked` says whether `main` is already inside this ticket's lock, which
+    it is for every write verb. A read verb given `--pr` is not, and takes the
+    lock here — for the length of one write, rather than across a whole
+    command someone is running precisely because a fix is holding it.
+    """
+    global _pending_selection
+    pending, _pending_selection = _pending_selection, None
+    if pending is None:
+        return
+    store, ticket = pending
+    if locked:
+        store.write_ticket(ticket)
+        return
+    try:
+        with store.lock(ticket["key"]):
+            store.write_ticket(ticket)
+    except StoreError as exc:
+        # Whatever the command was actually for has already happened and is
+        # correct. Losing the pointer move is worth saying out loud; failing
+        # the command over it is not.
+        print(f"selection not saved: {exc}", file=sys.stderr)
 
 
 def downstream(cfg: Config, step_id: str) -> list[str]:
@@ -666,10 +718,14 @@ def cmd_fix(args) -> int:
 def cmd_decide(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
+    # Resolved before the dry run answers: a `--pr` the ticket has never had is
+    # the first thing a dry run should report, not something the real run
+    # discovers later.
+    pr_ref = pick_pr(ctx, ticket, args)
     if args.dry_run:
         print(f"[dry-run] would close {args.finding} as wontfix")
         return 0
-    fix_module.decide(ctx.store, pick_pr(ctx, ticket, args), args.finding, args.reason)
+    fix_module.decide(ctx.store, pr_ref, args.finding, args.reason)
     print(f"{args.finding}: wontfix — {args.reason}")
     return 0
 
@@ -677,12 +733,11 @@ def cmd_decide(args) -> int:
 def cmd_effort(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
+    pr_ref = pick_pr(ctx, ticket, args)
     if args.dry_run:
         print(f"[dry-run] would set {args.finding} to {args.value}")
         return 0
-    fix_module.set_effort(
-        ctx.store, pick_pr(ctx, ticket, args), args.finding, args.value
-    )
+    fix_module.set_effort(ctx.store, pr_ref, args.finding, args.value)
     print(f"{args.finding}: {args.value}")
     return 0
 
@@ -849,6 +904,12 @@ def cmd_reset(args) -> int:
         registered_pr = record.get("registered_pr")
         if registered_pr and registered_pr in (ticket.get("prs") or []):
             ticket["prs"].remove(registered_pr)
+            # A pointer at a dropped ref is dormant rather than gone:
+            # `active_pr` ignores it, but a re-run of the same step registers
+            # the same ref and the stale pointer wakes up, re-selecting a PR
+            # nobody chose.
+            if ticket.get("active") == registered_pr:
+                ticket.pop("active", None)
         if record.get("registered_worktree") == ticket.get("worktree"):
             ticket.pop("worktree", None)
     inner.store.write_ticket(ticket)
@@ -1374,15 +1435,24 @@ def main(argv: list[str] | None = None) -> int:
         # lock too. Only when it is actually given: taking it unconditionally
         # would stop `ticket findings` being readable while a fix runs, which
         # is exactly when someone wants to read them.
-        writing = args.verb in WRITE_VERBS or bool(getattr(args, "pr", None))
+        # A stale move from an earlier in-process call is not this one's.
+        _clear_selection()
+        writing = args.verb in WRITE_VERBS
         if writing and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
             with store.lock(key):
-                return args.func(args)
-        return args.func(args)
+                return _dispatch(args, locked=True)
+        return _dispatch(args, locked=False)
     except TicketError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+
+def _dispatch(args, *, locked: bool) -> int:
+    """Run the verb, then write the selection it asked for if it succeeded."""
+    code = args.func(args)
+    _commit_selection(locked=locked)
+    return code
 
 
 if __name__ == "__main__":

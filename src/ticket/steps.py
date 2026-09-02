@@ -172,6 +172,12 @@ def run_step(
         prs = ticket.setdefault("prs", [])
         if pr_ref not in prs:
             prs.append(pr_ref)
+        # A registration is the one thing the store knows for certain about
+        # which PR is being worked: the step just opened it. Leaving the
+        # pointer where it was would dispatch every later review, fix and
+        # collect at the PR the run just walked away from, while announcing
+        # the new one — and nothing but a hand-typed `--pr` could reach it.
+        ticket["active"] = pr_ref
         # Recorded against the step so `ticket reset` can undo it without any
         # step id being hardcoded in the engine.
         record["registered_pr"] = pr_ref

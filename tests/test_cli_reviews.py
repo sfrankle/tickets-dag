@@ -789,13 +789,23 @@ def test_open_takes_a_pr_like_every_other_verb(env, fake_bin):
     assert "115" in viewed
 
 
-def test_open_without_a_pr_flag_still_takes_the_newest(env, fake_bin):
+def test_open_without_a_pr_flag_takes_the_selected_one(env, fake_bin):
+    started(fake_bin)
+    _register_second_pr(env, "acme/api#200")
+    assert main(["open", "ABC-123"]) == 0
+    viewed = next(c for c in fake_bin.calls_to("gh") if "--web" in c)
+    assert "200" in viewed
+
+
+def test_open_falls_back_to_the_newest_with_no_pointer(env, fake_bin):
+    """A ticket written before the pointer existed, or one `reset` has cleared."""
     from ticket.store import Store
 
     started(fake_bin)
     store = Store(env / "store")
     ticket = store.read_ticket("ABC-123")
     ticket["prs"] = ["acme/api#115", "acme/api#200"]
+    ticket.pop("active", None)
     store.write_ticket(ticket)
     assert main(["open", "ABC-123"]) == 0
     viewed = next(c for c in fake_bin.calls_to("gh") if "--web" in c)
@@ -809,12 +819,17 @@ def test_open_names_the_prs_it_knows_when_the_flag_misses(env, fake_bin, capsys)
 
 
 def _register_second_pr(env, ref="acme/api#131"):
-    """A second PR on one key, the way a re-run of a PR-registering step leaves it."""
+    """A second PR on one key, the way a re-run of a PR-registering step leaves it.
+
+    Registering selects: the step just opened this PR, so it is the one being
+    worked until someone says otherwise.
+    """
     from ticket.store import Store
 
     store = Store(env / "store")
     ticket = store.read_ticket("ABC-123")
     ticket["prs"].append(ref)
+    ticket["active"] = ref
     store.write_ticket(ticket)
     return store
 
@@ -852,7 +867,96 @@ def test_a_dry_run_resolves_a_pr_without_moving_the_pointer(env, fake_bin, capsy
     capsys.readouterr()
     assert main(["fix", "ABC-123", "f01", "--pr", "115", "--dry-run"]) == 0
     assert "[dry-run] would run" in capsys.readouterr().out
-    assert store.read_ticket("ABC-123").get("active") is None
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
+
+
+def test_a_read_verb_naming_a_pr_is_not_blocked_by_a_running_fix(
+    env, fake_bin, capsys
+):
+    """Naming a PR is how you read the *other* PR's findings, and the run
+    holding the lock is exactly when someone wants to."""
+    from ticket.config import load_config
+    from ticket.store import Store
+
+    started(fake_bin)
+    selecting = _register_second_pr(env)
+    selecting.add_findings("acme/api#115", [_easy("on the older PR")])
+    store = Store(load_config().store)
+    capsys.readouterr()
+
+    with store.lock("ABC-123"):
+        assert main(["findings", "ABC-123", "--pr", "115"]) == 0
+    captured = capsys.readouterr()
+    assert "on the older PR" in captured.out
+    # The read happened; only the pointer move could not be written, and that
+    # is said out loud rather than swallowed.
+    assert "selection not saved" in captured.err
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
+
+    # Nothing holding the lock, the same command moves the pointer.
+    assert main(["findings", "ABC-123", "--pr", "115"]) == 0
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#115"
+
+
+def test_a_rejected_command_does_not_move_the_pointer(env, fake_bin, capsys):
+    """A command that never ran has not chosen a PR: re-pointing every later
+    run off the back of one that failed its own validation is a surprise."""
+    started(fake_bin)
+    store = _register_second_pr(env)
+    capsys.readouterr()
+    assert main(["review", "ABC-123", "no-such-review", "--pr", "115"]) == 1
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
+
+    assert main(["attribute", "ABC-123", "src-1", "no-such-review", "--pr", "115"]) == 1
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
+
+
+def test_registering_a_pr_selects_it(env, fake_bin, capsys):
+    """The step just opened it. Leaving the pointer behind would work every
+    later review, fix and collect on the PR the run walked away from."""
+    started(fake_bin)
+    store = _register_second_pr(env)
+    (env / "scripts" / "draft-pr.sh").write_text(
+        "#!/bin/sh\necho 'ticket-pr: acme/api#900'\n"
+    )
+    (env / "scripts" / "draft-pr.sh").chmod(0o755)
+    capsys.readouterr()
+
+    assert main(["run", "ABC-123", "draft-pr"]) == 0
+    ticket = store.read_ticket("ABC-123")
+    assert "acme/api#900" in ticket["prs"]
+    assert ticket["active"] == "acme/api#900"
+
+
+def test_reset_clears_a_pointer_at_the_pr_it_drops(env, fake_bin, capsys):
+    """`active_pr` ignores a pointer at a ref the ticket no longer claims — but
+    a re-run that registers the same ref would wake it up and re-select a PR
+    nobody chose."""
+    started(fake_bin)
+    store = _register_second_pr(env, "acme/api#131")
+    ticket = store.read_ticket("ABC-123")
+    ticket["active"] = "acme/api#115"
+    store.write_ticket(ticket)
+    capsys.readouterr()
+
+    assert main(["reset", "ABC-123", "draft-pr", "--force"]) == 0
+    ticket = store.read_ticket("ABC-123")
+    assert "acme/api#115" not in ticket["prs"]
+    assert ticket.get("active") is None
+
+
+def test_a_dry_run_resolves_an_unknown_pr(env, fake_bin, capsys):
+    """A `--pr` the ticket has never had is the first thing a dry run should
+    report, not something the real run discovers afterwards."""
+    started(fake_bin)
+    _seed_findings(env, _easy("first"))
+    capsys.readouterr()
+    for verb in (
+        ["decide", "ABC-123", "f01", "covered elsewhere"],
+        ["effort", "ABC-123", "f01", "hard"],
+    ):
+        assert main([*verb, "--pr", "999", "--dry-run"]) == 1
+        assert "acme/api#115" in capsys.readouterr().err
 
 
 def test_next_acts_on_the_selected_pr(env, fake_bin, monkeypatch, capsys):
@@ -873,7 +977,7 @@ def test_next_acts_on_the_selected_pr(env, fake_bin, monkeypatch, capsys):
     # Pointed at the older one, it sees that PR's open finding instead.
     assert main(["next", "ABC-123", "--pr", "115", "--dry-run"]) == 0
     assert "[dry-run] would run" in capsys.readouterr().out
-    assert store.read_ticket("ABC-123").get("active") is None
+    assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
 
     assert main(["next", "ABC-123", "--pr", "115"]) == 0
     assert "fixer took f01" in capsys.readouterr().out
