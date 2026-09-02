@@ -135,6 +135,58 @@ def test_the_old_step_first_order_still_works_and_says_it_moved(tracked, capsys)
     assert "ticket skip ABC-123 evaluate" in err
 
 
+def test_the_swap_is_not_taken_when_the_key_is_already_first(tracked, capsys):
+    """The right order must not be "corrected" into anything, or noted at."""
+    assert main(["skip", "ABC-123", "evaluate"]) == 0
+    out, err = capsys.readouterr()
+    assert "skipped step evaluate" in out
+    assert "the key comes first" not in err
+
+
+def test_the_swap_is_not_taken_when_both_words_name_tracked_tickets(env, capsys):
+    """A ticket keyed after a stage must not pull the swap onto itself."""
+    main(["track", "ABC-123", "--repo", "acme/api"])
+    main(["track", "evaluate", "--repo", "acme/api"])
+    capsys.readouterr()
+
+    assert main(["skip", "ABC-123", "evaluate"]) == 0
+    out, err = capsys.readouterr()
+    assert "skipped step evaluate" in out
+    assert "the key comes first" not in err
+
+
+def test_a_mistyped_key_is_reported_as_the_key_the_user_typed(tracked, capsys):
+    """Two words that both look like keys, one of them tracked.
+
+    `ABC-999` names no stage, so this is a typo in the key, not the old order.
+    Swapping it would answer about `ABC-123` and print a note claiming a
+    correction the user never made.
+    """
+    assert main(["skip", "ABC-999", "ABC-123"]) == 1
+    err = capsys.readouterr().err
+    assert "ABC-999" in err
+    assert "the key comes first" not in err
+
+
+def test_neither_word_tracked_leaves_the_key_where_it_was(tracked, capsys):
+    assert main(["skip", "evaluate", "ZZZ-1"]) == 1
+    err = capsys.readouterr().err
+    assert "the key comes first" not in err
+    assert "evaluate" in err
+
+
+def test_the_hints_the_cli_prints_use_the_order_the_cli_takes(tracked, capsys):
+    """A hint is a copy-paste target. One printing the old order would trip
+    the deprecation path of the very change that wrote it."""
+    main(["run", "ABC-123", "review-spec"])
+    assert "ticket release ABC-123 review-spec" in capsys.readouterr().out
+
+    main(["skip", "ABC-123", "evaluate"])
+    capsys.readouterr()
+    main(["next", "ABC-123"])
+    assert "ticket release ABC-123 review-spec" in capsys.readouterr().out
+
+
 def test_decide_and_findings_keep_the_key_first(tracked, capsys):
     """They already did; pinned so the whole surface stays one shape.
 

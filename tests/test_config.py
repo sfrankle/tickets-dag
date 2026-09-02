@@ -453,6 +453,7 @@ def test_a_parse_source_that_overrides_nothing_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="overrides nothing"):
         load_config(write(tmp_path, text))
 
+
 # --- unknown keys ---------------------------------------------------------
 #
 # Issues #6 and #8: a typo under a known block used to be dropped in silence, so `tracker: {sumary: ...}` looked configured and did nothing.
@@ -525,3 +526,40 @@ def test_an_unknown_key_under_defaults_is_an_error(tmp_path):
 def test_a_known_key_everywhere_still_loads(tmp_path):
     cfg = load_config(write(tmp_path, SAMPLE))
     assert next(s.id for s in cfg.steps) == "evaluate"
+
+
+def test_an_unknown_key_under_fix_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\nfix:\n  modle: opus\n"))
+    assert "modle" in str(exc.value)
+
+
+def test_an_unknown_key_on_a_severity_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(
+            write(tmp_path, SEVERITIES.replace('    marker: "N"', '    mrker: "N"'))
+        )
+    assert "mrker" in str(exc.value)
+
+
+def test_an_unknown_key_under_a_repo_steps_block_is_an_error(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        load_config(
+            write(tmp_path, SAMPLE.replace("skip: [describe]", "skp: [describe]"))
+        )
+    assert "skp" in str(exc.value)
+
+
+def test_parse_is_a_known_top_level_key(tmp_path):
+    """#17 landed `parse:` on main while this branch was out. A whitelist that
+    does not know a key the loader reads rejects a working config."""
+    cfg = load_config(write(tmp_path, PARSE))
+    assert cfg.parse_source("odd-bot[bot]") is not None
+
+
+def test_a_yaml_boolean_key_is_reported_not_raised(tmp_path):
+    """YAML 1.1 reads a bare `no:` as False. Sorting str against bool used to
+    blow up inside the check whose whole job is to report a bad config."""
+    with pytest.raises(ConfigError) as exc:
+        load_config(write(tmp_path, SAMPLE + "\nno: 1\nzzz: 2\n"))
+    assert "zzz" in str(exc.value)

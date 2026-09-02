@@ -230,7 +230,7 @@ def cmd_queue(args) -> int:
 def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
     if action.kind == "gate":
         print(
-            f"parked at {action.target}. Release with: ticket release {action.target} {ticket['key']}"
+            f"parked at {action.target}. Release with: ticket release {ticket['key']} {action.target}"
         )
         return 0
     if action.kind == "rest":
@@ -307,7 +307,7 @@ def cmd_run(args) -> int:
     step = inner.cfg.step(args.step)
     if step.kind == "gate":
         print(
-            f"{step.id} is a gate. Release it with: ticket release {step.id} {args.key}"
+            f"{step.id} is a gate. Release it with: ticket release {args.key} {step.id}"
         )
         return 0
     result = steps_module.run_step(
@@ -1022,16 +1022,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _unswap(args, store: Store) -> None:
+def _is_stage(cfg, name: str) -> bool:
+    """Does config declare this name as a step or a review?"""
+    return any(s.id == name for s in cfg.steps) or any(
+        r.id == name for r in cfg.reviews
+    )
+
+
+def _unswap(args, cfg, store: Store) -> None:
     """Forgive `ticket skip <step> <KEY>`, the order these verbs used to take.
 
     That order is the whole of issue #12's headline bug: `run`, `skip` and `release` read `<step> <key>` while every other verb read `<key>` first, so `ticket skip KEY-1 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `show` had just listed.
 
-    The swap is taken only when the first word names no tracked ticket and the second one does, so it can never quietly pick the wrong ticket.
+    The swap is taken only when the first word names a stage config declares and no tracked ticket, and the second word does name a tracked ticket. All three have to hold, so it can never quietly pick the wrong ticket, and a mistyped key is reported as the key the user typed rather than being "corrected" into the step slot.
     """
     key = getattr(args, "key", None)
     step = getattr(args, "step", None)
-    if not key or not step or not is_safe_key(step):
+    # Both words are interpolated into a store path by read_ticket below, so
+    # neither is trusted before it is checked; an unusable key falls through to
+    # main()'s own error rather than being swapped for the step.
+    if not key or not step or not is_safe_key(step) or not is_safe_key(key):
+        return
+    # The first word has to name a stage, or this is not the old order at all:
+    # `skip ABC-999 ABC-123` is a typo in the key, and saying "the key comes
+    # first now" about it asserts a correction nobody made.
+    if not _is_stage(cfg, key):
         return
     if store.read_ticket(key) or not store.read_ticket(step):
         return
@@ -1059,7 +1074,8 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         if args.verb in STEP_AND_KEY_VERBS:
-            _unswap(args, Store(load_config().store))
+            cfg = load_config()
+            _unswap(args, cfg, Store(cfg.store))
         key = getattr(args, "key", None)
         # Before anything interpolates the key into a path — the lock below
         # does it first, ahead of any command's own validation.
