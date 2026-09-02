@@ -14,7 +14,6 @@ from ticket.parse import (
     parse,
     parse_haiku,
     parse_script,
-    script_parse,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reviews"
@@ -28,13 +27,18 @@ CONFIG = textwrap.dedent("""
 """)
 
 
-@pytest.fixture
-def cfg(tmp_path):
+def loaded(tmp_path, text):
+    """`text` as a loaded config, with the prompt file its steps: refer to."""
     path = tmp_path / "config.yml"
-    path.write_text(CONFIG)
+    path.write_text(text)
     (tmp_path / "prompts").mkdir()
     (tmp_path / "prompts" / "evaluate.md").write_text("x\n")
     return load_config(path)
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    return loaded(tmp_path, CONFIG)
 
 
 def body(name):
@@ -175,11 +179,7 @@ CUSTOM_REVIEW = textwrap.dedent("""
 
 @pytest.fixture
 def custom_cfg(tmp_path):
-    path = tmp_path / "config.yml"
-    path.write_text(CUSTOM)
-    (tmp_path / "prompts").mkdir()
-    (tmp_path / "prompts" / "evaluate.md").write_text("x\n")
-    return load_config(path)
+    return loaded(tmp_path, CUSTOM)
 
 
 def test_script_keys_off_the_configured_markers(custom_cfg):
@@ -232,9 +232,6 @@ def test_a_bullet_and_a_titled_paragraph_both_still_work(cfg):
 
 def test_recognised_but_empty_is_not_the_same_as_unrecognised(cfg):
     """Every section says None: ours, and genuinely zero findings."""
-    result = script_parse(cfg, body("all-clear.md"))
-    assert result.recognised is True
-    assert result.findings == []
     assert parse_script(cfg, body("all-clear.md")) == []
 
 
@@ -243,7 +240,6 @@ def test_a_section_we_cannot_split_is_unrecognised(cfg):
 
     Hand that to haiku rather than record the source with zero findings.
     """
-    assert script_parse(cfg, body("unrecognised-sections.md")).recognised is False
     assert parse_script(cfg, body("unrecognised-sections.md")) is None
 
 
@@ -287,11 +283,7 @@ ODD_REVIEW = textwrap.dedent("""
 
 @pytest.fixture
 def profile_cfg(tmp_path):
-    path = tmp_path / "config.yml"
-    path.write_text(PROFILE_CONFIG)
-    (tmp_path / "prompts").mkdir()
-    (tmp_path / "prompts" / "evaluate.md").write_text("x\n")
-    return load_config(path)
+    return loaded(tmp_path, PROFILE_CONFIG)
 
 
 def test_a_source_profile_overrides_the_builtin_for_that_author(profile_cfg):
@@ -441,7 +433,6 @@ def test_a_section_whose_findings_are_a_table_goes_to_haiku(cfg):
 
     Recording it as ours with zero findings is the silent loss #9 was filed about.
     """
-    assert script_parse(cfg, body("findings-as-table.md")).recognised is False
     assert parse_script(cfg, body("findings-as-table.md")) is None
 
 

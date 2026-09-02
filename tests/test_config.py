@@ -424,7 +424,7 @@ def test_parse_sources_are_optional(tmp_path):
 
 def test_a_parse_source_is_found_by_author(tmp_path):
     cfg = load_config(write(tmp_path, PARSE))
-    assert cfg.parse_source("odd-bot[bot]").bullet == r"^\s{0,3}>>\s+"
+    assert cfg.parse_source("odd-bot[bot]").bullet.pattern == r"^\s{0,3}>>\s+"
     assert cfg.parse_source("someone-else") is None
     assert cfg.parse_source(None) is None
 

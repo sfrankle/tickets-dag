@@ -118,15 +118,15 @@ class ParseSource:
 
     The escape hatch, not the road: `parse.py` ships a grammar wide enough for the shapes review bots actually write, and a profile exists for the bot that writes something genuinely different — so a new one is onboarded without waiting for a release.
     Every pattern is optional and replaces only itself; regexes in YAML rot, so the fewer of these a config carries, the better.
-    Patterns are compiled here so a typo fails at load.
+    Patterns are compiled here, so a typo fails at load and `parse.py` is handed the compiled form rather than compiling it again per review.
     """
 
     author: str
-    details: str | None = None
-    bullet: str | None = None
-    lead: str | None = None
-    file: str | None = None
-    verdict: str | None = None
+    details: re.Pattern | None = None
+    bullet: re.Pattern | None = None
+    lead: re.Pattern | None = None
+    file: re.Pattern | None = None
+    verdict: re.Pattern | None = None
 
 
 @dataclass(frozen=True)
@@ -390,13 +390,18 @@ def _load_key_pattern(raw) -> str | None:
     """
     if raw is None:
         return None
-    if not isinstance(raw, str):
-        raise ConfigError("key_pattern must be a regex string")
-    try:
-        re.compile(raw)
-    except re.error as exc:
-        raise ConfigError(f"key_pattern is not a valid regex: {exc}") from exc
+    _compile_pattern(raw, 0, "key_pattern")
     return raw
+
+
+def _compile_pattern(raw, flags: int, label: str) -> re.Pattern:
+    """A config value as a compiled regex, or a `ConfigError` naming where it came from."""
+    if not isinstance(raw, str):
+        raise ConfigError(f"{label} must be a regex string")
+    try:
+        return re.compile(raw, flags)
+    except re.error as exc:
+        raise ConfigError(f"{label} is not a valid regex: {exc}") from exc
 
 
 def _load_severities(raw) -> tuple[Severity, ...]:
@@ -446,16 +451,17 @@ def _load_severities(raw) -> tuple[Severity, ...]:
     return tuple(severities)
 
 
-PARSE_PATTERNS = ("details", "bullet", "lead", "file", "verdict")
-# The flags each pattern is compiled with, here rather than in `parse.py` so that a profile is validated at load under exactly the flags it will run under.
+# The overridable patterns, and the flags each is compiled with.
+# Compiling here rather than in `parse.py` is what lets a profile be validated at load under exactly the flags it will run under.
 # `bullet` and `lead` are matched against one line at a time, so `^` anchors the line with no flag needed.
 PARSE_FLAGS = {
     "details": re.DOTALL | re.IGNORECASE,
     "bullet": 0,
     "lead": 0,
-    "verdict": re.MULTILINE,
     "file": 0,
+    "verdict": re.MULTILINE,
 }
+PARSE_PATTERNS = tuple(PARSE_FLAGS)
 
 
 def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
@@ -486,28 +492,23 @@ def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
         if not author:
             raise ConfigError("every parse source needs an author")
         author = str(author)
-        if author in seen:
+        if author.lower() in seen:
             raise ConfigError(f"duplicate parse source author: {author}")
-        seen.add(author)
+        seen.add(author.lower())
         stray = sorted(set(item) - {"author", *PARSE_PATTERNS})
         if stray:
             raise ConfigError(
                 f"parse source {author} has unknown key(s): {', '.join(stray)}. "
                 f"Known: {', '.join(PARSE_PATTERNS)}"
             )
-        patterns: dict[str, str] = {}
+        patterns: dict[str, re.Pattern] = {}
         for name in PARSE_PATTERNS:
             pattern = item.get(name)
             if pattern is None:
                 continue
-            if not isinstance(pattern, str):
-                raise ConfigError(f"parse source {author}: {name} must be a regex")
-            try:
-                compiled = re.compile(pattern, PARSE_FLAGS[name])
-            except re.error as exc:
-                raise ConfigError(
-                    f"parse source {author}: {name} is not a valid regex: {exc}"
-                ) from exc
+            compiled = _compile_pattern(
+                pattern, PARSE_FLAGS[name], f"parse source {author}: {name}"
+            )
             if name == "details" and not {"summary", "body"} <= set(
                 compiled.groupindex
             ):
@@ -520,7 +521,7 @@ def _load_parse_sources(raw) -> tuple[ParseSource, ...]:
                     f"parse source {author}: file needs one capturing group "
                     "for the path"
                 )
-            patterns[name] = pattern
+            patterns[name] = compiled
         if not patterns:
             raise ConfigError(
                 f"parse source {author} overrides nothing. Give it at least one "

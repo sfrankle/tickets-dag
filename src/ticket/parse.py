@@ -9,7 +9,7 @@ The built-in grammar is deliberately wide, because "our format" is a shape sever
 A trailing summary table is not a finding.
 Anything a config could express in a regex, the built-in tries to handle first — `parse.sources` in config is an escape hatch for a bot that writes something genuinely different, not the primary path.
 
-Recognised-but-empty and not-our-format are different answers and are returned as such (see `ScriptParse`): a review that says "None." in every section is ours with zero findings, while a review whose sections we cannot split is not ours and belongs to Haiku.
+Recognised-but-empty and not-our-format are different answers and `parse_script` returns them as such — `[]` against `None`: a review that says "None." in every section is ours with zero findings, while a review whose sections we cannot split is not ours and belongs to Haiku.
 Collapsing the two is what records a source with zero findings and never asks Haiku.
 
 This module never sets `effort`. Severity says how important a finding is;
@@ -22,12 +22,11 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass, replace
-from functools import cache
 
-from .config import PARSE_FLAGS, Config
+from .config import PARSE_PATTERNS, Config
 from .errors import TicketError
 
-FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
 def loads_loose(raw: str):
@@ -36,18 +35,13 @@ def loads_loose(raw: str):
     Asking for "ONLY a JSON array" gets a fenced array often enough that not
     handling it means routine, avoidable failures.
     """
-    match = FENCE_RE.match(raw.strip())
+    match = JSON_FENCE_RE.match(raw.strip())
     return json.loads(match.group(1) if match else raw.strip())
 
 
 # `<details open>`, `<details class="...">` and `<DETAILS>` are all the same block.
 # Matching the literal tag lost a whole severity section in the wild.
-DETAILS_RE = re.compile(
-    r"<details[^>]*>\s*<summary[^>]*>(?P<summary>.*?)</summary>"
-    r"(?P<body>.*?)</details>",
-    re.DOTALL | re.IGNORECASE,
-)
-# The same block read as two halves, so a nested `<details>` can be counted past rather than mistaken for the end of the section it sits in.
+# The block is read as two halves — the open with its summary, then every tag after it — so a nested `<details>` is counted past rather than mistaken for the end of the section it sits in.
 DETAILS_OPEN_RE = re.compile(
     r"<details[^>]*>\s*<summary[^>]*>(?P<summary>.*?)</summary>",
     re.DOTALL | re.IGNORECASE,
@@ -63,7 +57,7 @@ LEAD_RE = re.compile(r"^\s{0,3}\*\*\S")
 TABLE_RE = re.compile(r"^\s{0,3}\|")
 # A fenced block belongs to the finding it sits in, whatever its lines start with.
 # Without this, every `-` and `+` line of a suggested diff is read as a bullet.
-FENCE_RE_LINE = re.compile(r"^\s{0,3}(?:```|~~~)")
+FENCE_LINE_RE = re.compile(r"^\s{0,3}(?:```|~~~)")
 # An indented line after a blank one is the rest of the list item above it, not a new paragraph.
 INDENT_RE = re.compile(r"^\s{2,}\S")
 
@@ -126,28 +120,17 @@ class Grammar:
 
     The built-in is `BUILTIN`.
     A `parse.sources` profile replaces only the patterns it names, so an override of `details:` still gets the built-in bullet, lead and file rules.
+    `details` and `file` are None on the built-in because it reads those two structurally rather than with a single regex; None therefore means "use the built-in rule", and a pattern means the profile named one.
     """
 
-    details: re.Pattern
     bullet: re.Pattern
     lead: re.Pattern
     verdict: re.Pattern
-    empty: re.Pattern
+    details: re.Pattern | None = None
     file: re.Pattern | None = None
 
 
-BUILTIN = Grammar(
-    details=DETAILS_RE,
-    bullet=BULLET_RE,
-    lead=LEAD_RE,
-    verdict=VERDICT_RE,
-    empty=EMPTY_RE,
-)
-
-
-@cache
-def _compiled(pattern: str, flags: int) -> re.Pattern:
-    return re.compile(pattern, flags)
+BUILTIN = Grammar(bullet=BULLET_RE, lead=LEAD_RE, verdict=VERDICT_RE)
 
 
 def grammar_for(cfg: Config, author: str | None) -> Grammar:
@@ -156,29 +139,18 @@ def grammar_for(cfg: Config, author: str | None) -> Grammar:
     if profile is None:
         return BUILTIN
     overrides = {
-        name: _compiled(pattern, PARSE_FLAGS[name])
-        for name in PARSE_FLAGS
+        name: pattern
+        for name in PARSE_PATTERNS
         if (pattern := getattr(profile, name)) is not None
     }
     return replace(BUILTIN, **overrides)
 
 
-@dataclass(frozen=True)
-class ScriptParse:
-    """What the script parser made of a body.
-
-    `recognised` is the question `parse` and `collect` actually ask: an unrecognised body goes to Haiku, a recognised one is ours even when `findings` is empty because every section said "None."
-    """
-
-    recognised: bool
-    findings: list[dict]
-
-
-def _cap(text: str, limit: int = MAX_SUMMARY) -> str:
+def _cap(text: str) -> str:
     text = text.strip()
-    if len(text) <= limit:
+    if len(text) <= MAX_SUMMARY:
         return text
-    cut = text[: limit - 1].rstrip()
+    cut = text[: MAX_SUMMARY - 1].rstrip()
     if " " in cut:
         cut = cut[: cut.rindex(" ")]
     return cut.rstrip(" ,;:." + DASHES) + "…"
@@ -233,11 +205,17 @@ def _file_of(text: str, pattern: re.Pattern | None = None) -> str | None:
         match = pattern.search(text)
         return match.group(1) if match else None
     for candidates in (PAREN_PATH_RE.finditer(text), BACKTICK_RE.finditer(text)):
-        paths = [path for match in candidates if (path := _as_path(match.group(1)))]
-        if not paths:
-            continue
-        # Within one tier, a token carrying a directory separator is the file being reported; a bare `README.md` is usually prose naming a file.
-        return next((p for p in paths if "/" in p or "\\" in p), paths[0])
+        fallback = None
+        for match in candidates:
+            path = _as_path(match.group(1))
+            if path is None:
+                continue
+            # Within one tier, a token carrying a directory separator is the file being reported; a bare `README.md` is usually prose naming a file.
+            if "/" in path or "\\" in path:
+                return path
+            fallback = fallback or path
+        if fallback:
+            return fallback
     return None
 
 
@@ -247,7 +225,7 @@ def _sections(text: str, grammar: Grammar) -> list[tuple[str, str]]:
     The built-in walks the tags and counts depth: bots fold evidence into an inner block, and a lazy `.*?</details>` ends the outer section on the inner close tag, losing every finding after it.
     An override is one regex and is taken at its word, the way `file:` is.
     """
-    if grammar.details is not DETAILS_RE:
+    if grammar.details is not None:
         return [
             (match.group("summary"), match.group("body"))
             for match in grammar.details.finditer(text)
@@ -269,35 +247,15 @@ def _sections(text: str, grammar: Grammar) -> list[tuple[str, str]]:
     return sections
 
 
-def _has_content(block: str, grammar: Grammar) -> bool:
-    """Anything in this section that a finding could have been made out of.
-
-    Table rows count here even though `_units` never makes findings out of them: a section written entirely as a table is one we have no rule for, not one that is empty.
-    Only `grammar.empty` — "None." — makes a section genuinely empty.
-    """
-    if grammar.empty.search(block):
-        return False
-    return any(line.strip() for line in block.splitlines())
-
-
-def _continues(lines: list[str], index: int) -> bool:
-    """Whether the blank line at `index` sits inside a list item rather than after it."""
-    for line in lines[index + 1 :]:
-        if not line.strip():
-            continue
-        return bool(INDENT_RE.match(line)) and not TABLE_RE.match(line)
-    return False
-
-
 def _units(block: str, grammar: Grammar) -> list[str]:
     """One entry per finding: a bullet or a lead-bolded paragraph, folded.
 
     A paragraph that opens with neither is prose about the section rather than a finding, and is skipped along with its continuation lines — except a bolded lead, which starts a finding whatever preceded it.
     Table rows are skipped outright.
     Fenced blocks are held whole: a suggested diff is part of its finding, not a run of bullets.
+
+    The caller has already ruled out an empty ("None.") section, so no units here means a section shaped in a way we have no rule for.
     """
-    if grammar.empty.search(block):
-        return []
     units: list[str] = []
     current: list[str] | None = None
     fenced = False
@@ -311,9 +269,17 @@ def _units(block: str, grammar: Grammar) -> list[str]:
         current = None
 
     lines = block.splitlines()
+    # The next non-blank line after each line, so the blank-line rule below can look ahead without rescanning the tail once per blank.
+    following: list[str | None] = [None] * len(lines)
+    upcoming = None
+    for index in range(len(lines) - 1, -1, -1):
+        following[index] = upcoming
+        if lines[index].strip():
+            upcoming = lines[index]
+
     for index, line in enumerate(lines):
         stripped = line.strip()
-        fence = bool(FENCE_RE_LINE.match(line))
+        fence = bool(FENCE_LINE_RE.match(line))
         if fence:
             fenced = not fenced
         if fence or fenced:
@@ -322,7 +288,14 @@ def _units(block: str, grammar: Grammar) -> list[str]:
                 current.append(line.rstrip())
             continue
         if not stripped or TABLE_RE.match(line):
-            if not stripped and current is not None and _continues(lines, index):
+            follows = following[index]
+            if (
+                not stripped
+                and current is not None
+                and follows is not None
+                and INDENT_RE.match(follows)
+                and not TABLE_RE.match(follows)
+            ):
                 current.append("")
                 continue
             flush()
@@ -341,7 +314,13 @@ def _units(block: str, grammar: Grammar) -> list[str]:
     return units
 
 
-def script_parse(cfg: Config, body: str, author: str | None = None) -> ScriptParse:
+def parse_script(
+    cfg: Config, body: str, author: str | None = None
+) -> list[dict] | None:
+    """The findings in `body`, or None if this is not a format we know.
+
+    None means "ask Haiku"; `[]` means "ours, and it found nothing".
+    """
     grammar = grammar_for(cfg, author)
     sections = [
         (section, severity)
@@ -349,15 +328,18 @@ def script_parse(cfg: Config, body: str, author: str | None = None) -> ScriptPar
         if (severity := cfg.severity_for_marker(heading)) is not None
     ]
     if not sections or not grammar.verdict.search(body):
-        return ScriptParse(False, [])
+        return None
 
     findings: list[dict] = []
     for section, severity in sections:
+        if EMPTY_RE.search(section):
+            # "None." — ours, and this severity has nothing.
+            continue
         units = _units(section, grammar)
-        if not units and _has_content(section, grammar):
-            # Our markers and our verdict, but a section we have no rule for.
+        if not units and section.strip():
+            # Our markers and our verdict, but a section we have no rule for — a table of findings, say.
             # Handing that to Haiku is the whole point of having a fallback; calling it ours with zero findings loses the review silently.
-            return ScriptParse(False, [])
+            return None
         for unit in units:
             findings.append(
                 {
@@ -368,18 +350,7 @@ def script_parse(cfg: Config, body: str, author: str | None = None) -> ScriptPar
                     "parsed_by": "script",
                 }
             )
-    return ScriptParse(True, findings)
-
-
-def parse_script(
-    cfg: Config, body: str, author: str | None = None
-) -> list[dict] | None:
-    """The findings in `body`, or None if this is not a format we know.
-
-    None means "ask Haiku"; `[]` means "ours, and it found nothing".
-    """
-    result = script_parse(cfg, body, author)
-    return result.findings if result.recognised else None
+    return findings
 
 
 def parse_haiku(cfg: Config, body: str) -> list[dict]:
@@ -417,7 +388,7 @@ def parse_haiku(cfg: Config, body: str) -> list[dict]:
 
 
 def parse(cfg: Config, body: str, author: str | None = None) -> list[dict]:
-    result = script_parse(cfg, body, author)
-    if result.recognised:
-        return result.findings
+    findings = parse_script(cfg, body, author)
+    if findings is not None:
+        return findings
     return parse_haiku(cfg, body)
