@@ -300,3 +300,88 @@ def test_migration_never_overwrites_an_already_migrated_file(tmp_path):
 def test_locks_stay_at_the_top_level(store):
     with store.lock("ABC-123"):
         assert (store.root / "locks" / "ABC-123.lock").is_file()
+
+
+def test_a_log_that_could_not_be_moved_keeps_its_working_recorded_path(tmp_path):
+    """A log whose destination is taken is not moved, so its record must not be
+    rewritten to name the file that won: that would point the step at another
+    run's output, which no later read could tell from the real thing."""
+    root = tmp_path / "store"
+    write_old_layout(root)
+    kept = root / "tickets" / "ABC-123" / "logs"
+    kept.mkdir(parents=True)
+    (kept / "evaluate-20260901T120416Z.log").write_text("another run")
+    store = Store(root)
+
+    recorded = store.read_ticket("ABC-123")["steps"]["evaluate"]["log"]
+    assert store.read_log(recorded) == "old log"
+    assert (root / "logs" / "ABC-123" / "evaluate-20260901T120416Z.log").is_file()
+
+
+def test_an_unreadable_pr_document_is_left_where_it_is(tmp_path, capsys):
+    root = tmp_path / "store"
+    write_old_layout(root)
+    (root / "prs" / "acme-api-pr115.json").write_text("{ not json")
+    Store(root)
+
+    assert (root / "prs" / "acme-api-pr115.json").read_text() == "{ not json"
+    assert not (root / "tickets" / "_unkeyed").exists()
+    assert "acme-api-pr115.json" in capsys.readouterr().err
+
+
+def test_a_stray_file_in_the_old_logs_directory_is_reported(tmp_path, capsys):
+    root = tmp_path / "store"
+    write_old_layout(root)
+    (root / "logs" / "stray.log").write_text("whose?")
+    Store(root)
+
+    assert (root / "logs" / "stray.log").is_file()
+    assert "stray.log" in capsys.readouterr().err
+
+
+def test_a_migration_that_left_something_behind_still_settles(tmp_path):
+    """Re-opening a store that could not be fully migrated must not keep
+    rewriting it: the leftovers block the old directories from being pruned, so
+    migration runs again on every open."""
+    root = tmp_path / "store"
+    write_old_layout(root)
+    (root / "logs" / "stray.log").write_text("whose?")
+    Store(root)
+    before = sorted(
+        (p.relative_to(root).as_posix(), p.read_text() if p.is_file() else "")
+        for p in root.rglob("*")
+    )
+    Store(root)
+    after = sorted(
+        (p.relative_to(root).as_posix(), p.read_text() if p.is_file() else "")
+        for p in root.rglob("*")
+    )
+    assert before == after
+
+
+def test_migration_reports_what_it_moved(tmp_path, capsys):
+    root = tmp_path / "store"
+    write_old_layout(root)
+    Store(root)
+    assert "migrated" in capsys.readouterr().err
+
+
+def test_a_quiet_migration_says_nothing(store, capsys):
+    store.write_ticket({"key": "ABC-123", "prs": []})
+    Store(store.root)
+    assert capsys.readouterr().err == ""
+
+
+def test_findings_land_in_the_ticket_that_is_named(store):
+    store.add_findings("acme/api#115", [{"summary": "a"}], key="ABC-123")
+    placed = store.root / "tickets" / "ABC-123" / "acme-api_115_findings.json"
+    assert placed.is_file()
+    assert not (store.root / "tickets" / "_unkeyed").exists()
+
+
+def test_findings_written_before_their_pr_are_not_orphaned(store):
+    """`add_findings` mints ids, so a findings document that ends up somewhere
+    the next read does not look restarts at f01 and re-uses ids."""
+    store.add_findings("acme/api#115", [{"summary": "a"}], key="ABC-123")
+    store.write_pr({"pr": "acme/api#115", "key": "ABC-123", "head": "9c1f0ab"})
+    assert store.add_findings("acme/api#115", [{"summary": "b"}]) == ["f02"]

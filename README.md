@@ -42,6 +42,8 @@ It is grouped by ticket key: everything one ticket knows sits in one directory.
 
 Recorded log paths are relative to the store root, so moving the store does not strand them.
 A store written by an older version was grouped by type (`prs/`, `findings/`, `logs/`); it is migrated into the layout above the first time this version opens it, and nothing is deleted in the process.
+A file it cannot place — because something is already at the destination, or because it is not readable as a JSON document — stays where it is, and a PR whose ticket cannot be named is filed under `tickets/_unkeyed/`.
+Either way the migration names it on stderr, since nothing that reads the store afterwards looks there.
 
 ## Use
 

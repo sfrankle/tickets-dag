@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -181,19 +182,31 @@ class Store:
 
     # --- findings ------------------------------------------------------
 
-    def read_findings(self, pr_ref: str) -> dict:
-        return self._read(self._findings_file(pr_ref)) or {
-            "pr": pr_ref,
-            "next_id": 1,
-            "findings": [],
-        }
+    def read_findings(self, pr_ref: str, key: str | None = None) -> dict:
+        doc = self._read(self._findings_file(pr_ref, key))
+        if doc is not None:
+            return doc
+        fresh = {"pr": pr_ref, "next_id": 1, "findings": []}
+        # The document records its ticket, so every later read of it agrees on
+        # where it lives without having to find the PR document first.
+        if key:
+            fresh["key"] = key
+        return fresh
 
     def write_findings(self, data: dict) -> None:
-        self._write(self._findings_file(data["pr"]), data)
+        self._write(self._findings_file(data["pr"], data.get("key")), data)
 
-    def add_findings(self, pr_ref: str, findings: list[dict]) -> list[str]:
-        """Append findings, minting `fNN` ids. The only place an id is assigned."""
-        doc = self.read_findings(pr_ref)
+    def add_findings(
+        self, pr_ref: str, findings: list[dict], key: str | None = None
+    ) -> list[str]:
+        """Append findings, minting `fNN` ids. The only place an id is assigned.
+
+        `key` names the ticket the PR belongs to. Without it the document's
+        place is a lookup over what is on disk, and findings written before the
+        PR document lands in `_unkeyed`, where the next read does not look --
+        which restarts `next_id` and re-uses ids that are already out.
+        """
+        doc = self.read_findings(pr_ref, key)
         assigned: list[str] = []
         for finding in findings:
             finding_id = f"f{doc['next_id']:02d}"
@@ -247,7 +260,11 @@ def _claim(source: Path, destination: Path) -> bool:
     if destination.exists():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(source, destination)
+    try:
+        os.replace(source, destination)
+    except FileNotFoundError:
+        # Another process opened the same old store and moved it first.
+        return False
     return True
 
 
@@ -257,44 +274,97 @@ def _needs_migration(root: Path) -> bool:
     return any((root / "tickets").glob("*.json"))
 
 
+def _where(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def migrate(root: Path) -> None:
     """Move a type-grouped store into the by-key layout, in place.
 
+    Nothing is deleted -- files move, empty directories go, and a file whose destination is taken stays put.
+    Anything left behind is named on stderr: it is invisible to every later read, so silence would be the store quietly losing it.
+
     Idempotent: it does nothing at all once there is no `prs/`, `findings/` or `logs/` directory and no loose `tickets/*.json`.
-    Nothing is deleted — files move, empty directories go, and a file whose destination is taken stays put.
+    A store it could not place everything in keeps one of those, so it runs again on every open -- and says the same thing again, which is the point.
     """
     if not root.is_dir() or not _needs_migration(root):
         return
 
     tickets = root / "tickets"
+    moved = 0
+    left: list[str] = []
+
+    def claim(source: Path, destination: Path) -> bool:
+        nonlocal moved
+        if _claim(source, destination):
+            moved += 1
+            return True
+        left.append(
+            f"{_where(root, source)} not moved: {_where(root, destination)} already exists"
+        )
+        return False
 
     # Tickets first: the PR and findings documents are placed by the key their ticket carries, so the ticket directories have to exist to be found.
     for path in sorted(tickets.glob("*.json")):
-        _claim(path, tickets / path.stem / "state.json")
+        claim(path, tickets / path.stem / "state.json")
 
     for path in sorted((root / "prs").glob("*.json")):
-        doc = _load(path) or {}
+        doc = _load(path)
+        if doc is None:
+            left.append(
+                f"{_where(root, path)} left in place: not a readable JSON object"
+            )
+            continue
         key = doc.get("key") or UNKEYED
         name = f"{pr_slug(doc['pr'])}.json" if doc.get("pr") else path.name
-        _claim(path, tickets / key / name)
+        if claim(path, tickets / key / name) and key == UNKEYED:
+            left.append(
+                f"{_where(root, path)} names no ticket: filed under tickets/{UNKEYED}/"
+            )
 
     for path in sorted((root / "findings").glob("*.json")):
-        doc = _load(path) or {}
+        doc = _load(path)
+        if doc is None:
+            left.append(
+                f"{_where(root, path)} left in place: not a readable JSON object"
+            )
+            continue
         key = _key_of_pr(tickets, doc.get("pr")) or UNKEYED
         name = f"{pr_slug(doc['pr'])}_findings.json" if doc.get("pr") else path.name
-        _claim(path, tickets / key / name)
+        if claim(path, tickets / key / name) and key == UNKEYED:
+            left.append(
+                f"{_where(root, path)} names no ticket: filed under tickets/{UNKEYED}/"
+            )
 
-    for directory in sorted((root / "logs").glob("*")):
-        if not directory.is_dir():
+    placed_logs: set[tuple[str, str]] = set()
+    for entry in sorted((root / "logs").glob("*")):
+        if not entry.is_dir():
+            left.append(
+                f"{_where(root, entry)} left in place: not a ticket's log directory"
+            )
             continue
-        for path in sorted(directory.iterdir()):
-            if path.is_file():
-                _claim(path, tickets / directory.name / "logs" / path.name)
+        for path in sorted(entry.iterdir()):
+            if not path.is_file():
+                left.append(f"{_where(root, path)} left in place: not a log file")
+                continue
+            if claim(path, tickets / entry.name / "logs" / path.name):
+                placed_logs.add((entry.name, path.name))
 
-    _rewrite_log_paths(tickets)
+    _rewrite_log_paths(tickets, placed_logs)
 
     for name in ("prs", "findings", "logs"):
         _prune(root / name)
+
+    if moved or left:
+        print(
+            f"ticket: migrated {moved} file(s) under {root} to the by-key layout",
+            file=sys.stderr,
+        )
+        for note in left:
+            print(f"ticket:   {note}", file=sys.stderr)
 
 
 def _key_of_pr(tickets: Path, pr_ref: str | None) -> str | None:
@@ -311,10 +381,11 @@ def _key_of_pr(tickets: Path, pr_ref: str | None) -> str | None:
     return None
 
 
-def _rewrite_log_paths(tickets: Path) -> None:
-    """Point every recorded log at its new home, relative to the store root.
+def _rewrite_log_paths(tickets: Path, placed: set[tuple[str, str]]) -> None:
+    """Point every log that actually moved at its new home, relative to the store root.
 
     Only the file name survives the move, which is all that identifies a log: they were always `<store>/logs/<KEY>/<name>` and are now `tickets/<KEY>/logs/<name>`.
+    Only `placed` is rewritten. A log the migration could not move is still at the path its step records, and rewriting it would name the file that won the destination instead -- a step pointing at another run's output, which nothing downstream could tell from the real thing.
     """
     for path in sorted(tickets.glob("*/state.json")):
         doc = _load(path)
@@ -326,7 +397,10 @@ def _rewrite_log_paths(tickets: Path) -> None:
             recorded = isinstance(record, dict) and record.get("log")
             if not recorded:
                 continue
-            wanted = f"tickets/{key}/logs/{PurePosixPath(str(recorded).replace(os.sep, '/')).name}"
+            name = PurePosixPath(str(recorded).replace(os.sep, "/")).name
+            if (key, name) not in placed:
+                continue
+            wanted = f"tickets/{key}/logs/{name}"
             if recorded != wanted:
                 record["log"] = wanted
                 changed = True

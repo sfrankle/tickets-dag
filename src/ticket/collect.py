@@ -31,7 +31,9 @@ def _fingerprint(finding: dict) -> tuple[str, str]:
     return (finding.get("file") or "", (finding.get("summary") or "").strip())
 
 
-def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[dict]:
+def _drop_duplicates(
+    store: Store, pr_ref: str, findings: list[dict], key: str | None = None
+) -> list[dict]:
     """review-bot posts on every push and a re-run review repeats its unfixed
     items, so the same finding arrives again under a new source id.
 
@@ -41,7 +43,7 @@ def _drop_duplicates(store: Store, pr_ref: str, findings: list[dict]) -> list[di
     dropped as a duplicate."""
     known = {
         _fingerprint(f)
-        for f in store.read_findings(pr_ref)["findings"]
+        for f in store.read_findings(pr_ref, key)["findings"]
         if f.get("status") == "open"
     }
     fresh = []
@@ -109,7 +111,7 @@ def collect(
         findings = script_findings
         if findings is None:
             findings = parse_haiku(cfg, source["body"])
-        findings = _drop_duplicates(store, pr_ref, findings)
+        findings = _drop_duplicates(store, pr_ref, findings, ticket["key"])
         assign_effort(cfg, findings)
         for finding in findings:
             finding["source"] = {
@@ -126,7 +128,9 @@ def collect(
             "findings": [],
         }
 
-        record["findings"] = store.add_findings(pr_ref, findings)
+        # Named, not looked up: this runs before `write_pr` below, so on a
+        # first collection there is no PR document on disk to find the key in.
+        record["findings"] = store.add_findings(pr_ref, findings, ticket["key"])
         pr.setdefault("collected", []).append(record)
         # Written per source, not once at the end: a failure on a later source
         # must not leave earlier findings minted with no collection record,
