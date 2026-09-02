@@ -870,9 +870,7 @@ def test_a_dry_run_resolves_a_pr_without_moving_the_pointer(env, fake_bin, capsy
     assert store.read_ticket("ABC-123")["active"] == "acme/api#131"
 
 
-def test_a_read_verb_naming_a_pr_is_not_blocked_by_a_running_fix(
-    env, fake_bin, capsys
-):
+def test_a_read_verb_naming_a_pr_is_not_blocked_by_a_running_fix(env, fake_bin, capsys):
     """Naming a PR is how you read the *other* PR's findings, and the run
     holding the lock is exactly when someone wants to."""
     from ticket.config import load_config
