@@ -670,11 +670,8 @@ def cmd_reviews(args) -> int:
         print(f"  {review.id:<16} {review.dispatch:<6} {status}")
     others = [c for c in pr.get("collected") or [] if not c.get("review")]
     for other in others:
-        # The source id, because it is the argument `ticket attribute` takes to
-        # correct one of these lines.
         print(
-            f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings),"
-            f" not ours [{other['source_id']}]"
+            f"  {other['author']:<16} {'-':<6} collected ({len(other['findings'])} findings), not ours"
         )
     return 0
 

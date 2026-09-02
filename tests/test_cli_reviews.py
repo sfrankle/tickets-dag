@@ -679,9 +679,9 @@ def test_attribute_unwedges_a_dispatch_recorded_as_none_of_ours(env, fake_bin, c
     main(["collect", "ABC-123"])
     capsys.readouterr()
 
-    # The source id `attribute` needs is on the line `reviews` prints for it.
-    assert main(["reviews", "ABC-123"]) == 0
-    assert "[PRR_1]" in capsys.readouterr().out
+    # The source id `attribute` needs is in the PR document `--json` dumps.
+    assert main(["reviews", "ABC-123", "--json"]) == 0
+    assert "PRR_1" in capsys.readouterr().out
 
     assert main(["collect", "ABC-123"]) == 0
     assert "not collected yet" in capsys.readouterr().out

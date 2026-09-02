@@ -211,7 +211,7 @@ A re-read that recovers nothing is not recorded as work at all: it prints nothin
 
 **Attribution the machine cannot recover, you can supply.**
 `ticket attribute KEY <source-id> <review>` writes the attribution a first read could not make, which is what unsticks a `docs-tests` dispatch answered by a body that fell back to Haiku: without it that dispatch is uncollected forever and `next` keeps asking for a `collect` that can never clear.
-`ticket reviews KEY` prints the source id of every record collected as none of ours, in brackets on its line, because that id is the argument this takes.
+The source id it takes is GitHub's, and `ticket reviews KEY --json` dumps the PR document that carries it.
 `none` in place of a review id is the other direction, for a record that took a slot it should not have.
 The change reaches the findings that source minted as well as the collection record, so `ticket findings` and `ticket reviews` do not end up disagreeing about where a finding came from.
 A review is a slot per dispatch: attributing to one whose dispatches are all collected is an error, as is naming a review that was never dispatched on the PR.
