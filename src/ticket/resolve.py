@@ -171,7 +171,7 @@ def next_action(
         step_id, reason = step
         if cfg.step(step_id).kind == "gate":
             return Action(
-                "gate", step_id, f"parked at {step_id}; ticket release {step_id} <KEY>"
+                "gate", step_id, f"parked at {step_id}; ticket release <KEY> {step_id}"
             )
         return Action("step", step_id, reason)
 

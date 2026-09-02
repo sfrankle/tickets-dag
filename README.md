@@ -48,15 +48,28 @@ Either way the migration names it on stderr, since nothing that reads the store 
 
 ## Use
 
+Two families of verb, and `ticket --help` shows which is which.
+**Management** verbs are the engine's own and mean the same thing under every config.
+**Stage** verbs are the engine's too, but every name they take as an argument comes from your config — they are listed in their own block at the foot of `--help`, and the names themselves are never in `--help` at all.
+
 ```bash
+# management
 ticket                            # the queue
 ticket ABC-123                    # one row: steps, next action, findings
 ticket track ABC-123 --repo acme/api
 ticket refresh                    # fetch, fast-forward, and re-read every row
 ticket next ABC-123               # run whatever the resolver says is next
-ticket run spec ABC-123           # run or re-run a named step
-ticket skip describe ABC-123      # walk past a step (or a review)
-ticket release review-spec ABC-123
+ticket reset ABC-123 implement    # re-run a step and everything below it
+ticket log ABC-123 implement      # what that step's last run wrote
+ticket open ABC-123               # the PR in a browser
+ticket stages --list              # the steps and reviews this config declares
+ticket config                     # the resolved config
+ticket config --validate          # ...and whether it actually works
+
+# stages — the second word is always the ticket key, the third a stage
+ticket run ABC-123 spec           # run or re-run a named step
+ticket skip ABC-123 describe      # walk past a step (or a review)
+ticket release ABC-123 review-spec
 ticket review ABC-123             # dispatch the next review
 ticket collect ABC-123            # ingest reviews and comments not yet seen
 ticket collect ABC-123 --recollect 5049842015   # read one collected source again
@@ -64,12 +77,31 @@ ticket findings ABC-123
 ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
 ticket fix ABC-123 --all          # work the whole queue, waiting between each
-ticket open ABC-123               # the PR in a browser
-ticket effort ABC-123 f02 hard     # override how a finding gets fixed
+ticket effort ABC-123 f02 hard    # override how a finding gets fixed
 ticket decide ABC-123 f03 "covered by ABC-140"
-ticket reset ABC-123 implement    # re-run a step and everything below it
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 ```
+
+**The key comes first, always.**
+`run`, `skip` and `release` used to read `<step> <key>` while every other verb read `<key>` first, so `ticket skip ABC-123 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `ticket show` had just called `next` (issue #12).
+The old order is still accepted — with a note saying where the key moved — but only when the first word names no tracked ticket and the second one does, so it can never quietly pick the wrong ticket.
+
+**A stage exists because config declares it.**
+There is no per-key registration and never was: `track` registers a ticket, and every step and review in `config.yml` is available on it from that moment.
+The store only records what has happened to a stage, which is why `show`, `next`, `run`, `skip`, `release`, `reset` and `log` all resolve a stage name against the config alone and all accept the same set.
+`ticket stages --list` is that set.
+
+## Checking a config
+
+`ticket config` prints the resolved config — store, models, worktrees, severities, the declared steps and reviews, the repos with overrides — and `ticket config --validate` reports only what is wrong with it.
+Both exit non-zero when there is a problem, so `--validate` works in a pre-commit hook or CI.
+
+It catches the things that only bite halfway through a run: a `prompt:` or `run:` that is not there, one that cannot be read, a `run:` that is not executable, a `model:` that is not in `models:`, and a `repos.<repo>.path` that is not a directory.
+Anything that stops the file loading at all — a cycle in `needs:`, an unknown model alias, a repo override that strands a dependent — is reported the same way rather than raised as a traceback.
+
+**An unknown key is an error.**
+A key this loader does not know, at the top level or under any block it does know, fails the load and names itself.
+`tracker: {sumary: [...]}` used to load clean and do nothing, which is the worst of both (issues #6, #8).
 
 ## How it works
 
