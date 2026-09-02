@@ -442,63 +442,74 @@ def cmd_collect(args) -> int:
 
 
 def cmd_fix(args) -> int:
+    """One run, one finding.
+
+    A run used to be able to work the whole queue, which meant a second handoff going out while the first was still with the fixer — and a fixer that runs one action per PR drops the second.
+    The queue is worked by running this again.
+    """
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
     pr_ref = pick_pr(ticket, args)
 
-    if args.finding and args.all:
-        raise TicketError("pass a finding id or --all, not both")
-
-    queue = open_findings(inner.store.read_findings(pr_ref))
-    efforts = {f["id"]: f.get("effort") for f in queue}
-
     if args.finding:
-        targets = [args.finding]
-    elif args.all:
-        # Findings with no effort are refused by `fix_one`, so working the whole
-        # queue skips them rather than stopping on the first one.
-        targets = [f["id"] for f in queue if f.get("effort") in EFFORTS]
-        stuck = [f["id"] for f in queue if f.get("effort") not in EFFORTS]
-        if stuck:
-            print(
-                f"no effort set, skipped: {', '.join(stuck)}. "
-                f"Set one with: ticket effort {args.key} <id> easy|hard"
-            )
-        if not targets:
-            print("nothing to fix")
-            return 0
+        finding_id = args.finding
     else:
         action = resolve_for(inner, ticket)
         if action.kind != "fix":
             raise TicketError(f"next is `{action.kind}`, not a fix: {action.reason}")
-        targets = [action.target]
+        finding_id = action.target
 
-    for finding_id in targets:
-        # The bot runs one action per PR and silently drops a second dispatch,
-        # so an easy fix waits for its commit before the next one goes out.
-        # `--all` implies that wait; without it the second /edit vanishes with
-        # no error. A hard fix commits locally and never waits: the remote head
-        # does not move, so waiting on it would poll until it gave up.
-        wait_here = (args.wait or args.all) and efforts.get(finding_id) == "easy"
-        before = None
-        if wait_here and not args.dry_run:
-            # The live head, not the stored one: the stored value is None for a
-            # PR we have only ever collected from, and stale once an earlier fix
-            # moved the head. Either makes the wait below return immediately.
-            before = gh.pr_head(pr_ref)
-        status = fix_module.fix_one(
-            inner.cfg, inner.store, ticket, pr_ref, finding_id, dry_run=args.dry_run
+    queue = {f["id"]: f for f in inner.store.read_findings(pr_ref)["findings"]}
+    effort = (queue.get(finding_id) or {}).get("effort")
+    remaining = [f["id"] for f in open_findings(inner.store.read_findings(pr_ref))]
+
+    # An easy fix is committed by someone else, on the remote, minutes later, so this run waits for that commit rather than leaving the next run to hand out another finding on top of a job still in flight.
+    # A hard fix commits locally: the remote head never moves, so waiting on it would poll until it gave up.
+    wait_here = effort == "easy" and not args.no_wait and not args.dry_run
+    before = None
+    if wait_here:
+        # The live head, not the stored one: the stored value is None for a PR we have only ever collected from, and stale once an earlier fix moved the head.
+        # Either makes the wait below return immediately.
+        before = gh.pr_head(pr_ref)
+
+    status = fix_module.fix_one(
+        inner.cfg,
+        inner.store,
+        ticket,
+        pr_ref,
+        finding_id,
+        dry_run=args.dry_run,
+        force=args.force,
+    )
+    print(f"{finding_id}: {status}")
+    if args.dry_run or status == "resolved":
+        return 0
+
+    if not wait_here:
+        if effort == "easy":
+            print(
+                f"{finding_id}: not waiting (--no-wait). It is with the fixer; run "
+                f"`ticket fix {args.key}` again once its commit lands."
+            )
+        return 0
+
+    head = fix_module.wait_for_head(pr_ref, before)
+    # ensure_pr, not read_pr: the document does not exist yet when the finding came from a source we only ever collected.
+    pr = reviews_module.ensure_pr(inner.store, ticket, pr_ref)
+    pr["head"] = head
+    inner.store.write_pr(pr)
+    closed = fix_module.resolve_from_git(inner.cfg, inner.store, ticket, pr_ref)
+    if finding_id in closed:
+        print(f"{finding_id}: resolved")
+        left = [f for f in remaining if f != finding_id]
+        if left:
+            print(f"{len(left)} finding(s) still open. Next: ticket fix {args.key}")
+    else:
+        print(
+            f"{finding_id}: still open — {head[:7]} carries no trailer for it. "
+            f"Check the PR, then re-send with: ticket fix {args.key} {finding_id} --force"
         )
-        print(f"{finding_id}: {status}")
-        if status == "open" and not args.dry_run and wait_here:
-            head = fix_module.wait_for_head(pr_ref, before)
-            # ensure_pr, not read_pr: the document does not exist yet when the
-            # finding came from a source we only ever collected.
-            pr = reviews_module.ensure_pr(inner.store, ticket, pr_ref)
-            pr["head"] = head
-            inner.store.write_pr(pr)
-            fix_module.resolve_from_git(inner.cfg, inner.store, ticket, pr_ref)
     return 0
 
 
@@ -980,15 +991,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dry-run", action="store_true")
 
-    p = add("fix", cmd_fix, help="work findings, one commit each, routed by effort")
+    p = add("fix", cmd_fix, help="work one finding, routed by effort")
     p.add_argument("key")
     p.add_argument("finding", nargs="?")
     p.add_argument("--pr")
-    p.add_argument("--wait", action="store_true", help="wait for the bot's commit")
     p.add_argument(
-        "--all",
+        "--no-wait",
         action="store_true",
-        help="work every open finding in order, waiting between easy ones",
+        help="hand the finding off and return, without waiting for its commit",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="send a finding again that is already with the fixer",
     )
     p.add_argument("--dry-run", action="store_true")
 

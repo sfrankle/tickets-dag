@@ -42,7 +42,9 @@ TOP_LEVEL_KEYS = {
 DEFAULTS_KEYS = {"model"}
 WORKTREES_KEYS = {"enabled", "root", "branch"}
 TRACKER_KEYS = {"summary"}
-FIX_KEYS = {"model", "args"}
+FIX_KEYS = {"model", "args", "easy", "hard"}
+FIX_EASY_KEYS = {"run"}
+FIX_HARD_KEYS = {"model", "args", "prompt"}
 STEP_KEYS = {"id", "run", "gate", "prompt", "model", "needs", "args"}
 REVIEW_KEYS = {"id", "order", "dispatch", "prompt", "model", "args"}
 SEVERITY_KEYS = {"id", "marker", "default"}
@@ -144,16 +146,19 @@ class Review:
 
 @dataclass(frozen=True)
 class Fix:
-    """How a `hard` fix runs its local session.
+    """Where each effort route hands a finding off to.
 
-    Separate from any step: a fix is not in the DAG, but it is a handoff that
-    has to write files, so it needs the same model and argv knobs — agent mode
-    above all. Keying it off a step id would put a step name back in the
-    engine.
+    `easy` runs `easy_run`, a local script: what fixes an easy finding is a site's own business — a PR comment to a bot, a queue, a patch mailer — and the engine only knows how to select the finding and run the script.
+    `hard` is a local Claude session, so it takes the same model and argv knobs any handoff does, agent mode above all, plus an optional prompt of the site's own in place of the built-in one.
+
+    Separate from any step: a fix is not in the DAG.
+    Keying it off a step id would put a step name back in the engine.
     """
 
     model: str | None = None
     args: tuple[str, ...] = ()
+    hard_prompt: str | None = None
+    easy_run: str | None = None
 
 
 @dataclass(frozen=True)
@@ -417,16 +422,34 @@ def _load_reviews(raw_reviews: list, default_model: str | None) -> tuple[Review,
 
 def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
     if not isinstance(raw, dict):
-        raise ConfigError("fix: must be a mapping with model: and/or args:")
+        raise ConfigError("fix: must be a mapping with easy: and/or hard:")
     _reject_unknown("fix:", raw, FIX_KEYS)
-    model = raw.get("model") or default_model
+    easy = raw.get("easy") or {}
+    hard = raw.get("hard") or {}
+    if not isinstance(easy, dict):
+        raise ConfigError("fix.easy: must be a mapping with run:")
+    if not isinstance(hard, dict):
+        raise ConfigError("fix.hard: must be a mapping with model:, args: or prompt:")
+    _reject_unknown("fix.easy:", easy, FIX_EASY_KEYS)
+    _reject_unknown("fix.hard:", hard, FIX_HARD_KEYS)
+    if easy and not easy.get("run"):
+        raise ConfigError(
+            "fix.easy: needs run: — the script an easy finding is handed to"
+        )
+    # `model:`/`args:` at the top level still mean the hard route: it was the only route with a session before `easy` had a script of its own.
+    model = hard.get("model") or raw.get("model") or default_model
     if not model:
         raise ConfigError("fix: has no model: and there is no defaults.model")
     # Eagerly, like defaults.model: a typo here should fail at load, not
     # halfway through the one command that spends an Opus session.
     if model not in models:
         raise ConfigError(f"fix.model is {model!r}, which is not in models:")
-    return Fix(model=model, args=tuple(raw.get("args") or ()))
+    return Fix(
+        model=model,
+        args=tuple(hard.get("args") or raw.get("args") or ()),
+        hard_prompt=hard.get("prompt"),
+        easy_run=easy.get("run"),
+    )
 
 
 def _load_key_pattern(raw) -> str | None:

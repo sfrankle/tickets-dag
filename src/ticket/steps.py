@@ -69,7 +69,7 @@ def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
     return argv, cfg.path_to(step.prompt).read_text()
 
 
-def _tee(
+def tee(
     argv: list[str], *, cwd: Path, env: dict, stdin_text: str | None
 ) -> tuple[str, int]:
     """Run, streaming output to the terminal as it arrives and collecting it.
@@ -133,7 +133,7 @@ def run_step(
 
     log_file = store.log_path(ticket["key"], step.id)
     try:
-        output, exit_code = _tee(
+        output, exit_code = tee(
             argv,
             cwd=workdir(cfg, ticket),
             env=step_env(cfg, ticket),
