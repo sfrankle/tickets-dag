@@ -205,8 +205,7 @@ class Tracker:
 class RepoGuess:
     """What inference made of a summary, and why, when it made nothing.
 
-    `why` is written for a human to read off a warning line, so it is empty
-    exactly when `repo` is set: there is nothing to explain about a hit.
+    `why` is written for a human to read off a warning line, so it is empty exactly when `repo` is set: there is nothing to explain about a hit.
     """
 
     repo: str | None
@@ -217,10 +216,8 @@ class RepoGuess:
 class Inference:
     """`infer.repo.patterns:`, compiled.
 
-    Patterns are matched against a ticket's summary. Everything outside a
-    `{placeholder}` is matched literally — `[` is the bracket a human typed,
-    not a character class — because the people writing ticket titles are not
-    writing regexes, and neither is whoever wrote this block of the config.
+    Patterns are matched against a ticket's summary.
+    Everything outside a `{placeholder}` is matched literally — `[` is the bracket a human typed, not a character class — because the people writing ticket titles are not writing regexes, and neither is whoever wrote this block of the config.
     """
 
     patterns: tuple[re.Pattern, ...] = ()
@@ -255,8 +252,8 @@ class Config:
     parse_sources: tuple[ParseSource, ...] = ()
     owner: str | None = None
     inference: Inference = Inference()
-    # Every string that names a repo — alias, bare name, `owner/repo` —
-    # lowercased. `--repo` resolves against it whether or not `infer:` exists.
+    # Every string that names a repo — alias, bare name, `owner/repo` — lowercased.
+    # `--repo` resolves against it whether or not `infer:` exists.
     repo_tokens: dict[str, str] = field(default_factory=dict)
 
     def model_id(self, alias: str) -> str:
@@ -316,9 +313,7 @@ class Config:
     def resolve_repo(self, name: str) -> str:
         """A name a human typed — alias, bare repo, or `owner/repo` — to a full one.
 
-        The engine never invents a repo: a name it has never heard of comes
-        back unchanged apart from the owner it is missing, so a typo reaches
-        `gh` as the typo rather than as some near neighbour's repo.
+        The engine never invents a repo: a name it has never heard of comes back unchanged apart from the owner it is missing, so a typo reaches `gh` as the typo rather than as some near neighbour's repo.
         """
         if not name:
             return name
@@ -334,9 +329,7 @@ class Config:
     def infer_repo(self, summary: str) -> RepoGuess:
         """Which repo a ticket's summary names, if the config can tell.
 
-        Two different repos in one summary is not a coin toss: nothing is
-        returned and both are named, because picking one would silently point
-        every later step at the wrong checkout.
+        Two different repos in one summary is not a coin toss: nothing is returned and both are named, because picking one would silently point every later step at the wrong checkout.
         """
         if not self.inference.patterns:
             return RepoGuess(None, "no infer.repo.patterns: in config")
@@ -357,9 +350,7 @@ class Config:
         return _anchor(raw, self.root) if raw else None
 
     def for_repo(self, repo: str) -> Config:
-        # Resolving here rather than at each call site is what makes `--repo`
-        # mean the same thing to every verb that takes one; `resolve_repo` is
-        # a no-op on a name that is already full, so calling it twice is safe.
+        # Resolving here rather than at each call site is what makes `--repo` mean the same thing to every verb that takes one; `resolve_repo` is a no-op on a name that is already full, so calling it twice is safe.
         repo = self.resolve_repo(repo)
         override = self.repos.get(repo)
         if not override:
@@ -705,10 +696,8 @@ def _load_owner(raw) -> str | None:
 def _load_repos(raw) -> dict:
     """`repos:`, shape-checked — every override the rest of the file may read.
 
-    One place, like every other top-level key, so a new entry in `REPO_KEYS`
-    cannot be checked here and forgotten somewhere else. The one check that
-    stays behind in `load_config` is the `for_repo` smoke-run, which needs the
-    built config to have steps and reviews to resolve names against.
+    One place, like every other top-level key, so a new entry in `REPO_KEYS` cannot be checked here and forgotten somewhere else.
+    The one check that stays behind in `load_config` is the `for_repo` smoke-run, which needs the built config to have steps and reviews to resolve names against.
     """
     repos = dict(raw or {})
     for repo, override in repos.items():
@@ -725,16 +714,18 @@ def _load_repos(raw) -> dict:
 def _repo_tokens(repos: dict) -> dict[str, str]:
     """Every string that names a repo, lowercased, mapped to the full name.
 
-    A bare repo name claimed by two owners is left out rather than resolved to
-    one of them: it stops matching, which is recoverable, instead of matching
-    the wrong clone, which is not. An alias claimed twice is a mistake in the
-    config rather than an accident of two owners, so that one is an error.
+    A bare repo name claimed by two owners is left out rather than resolved to one of them: it stops matching, which is recoverable, instead of matching the wrong clone, which is not.
+    An alias claimed twice is a mistake in the config rather than an accident of two owners, so that one is an error.
 
-    An alias beats a bare name another repo's spelling happens to yield, because
-    the alias is a name someone wrote down and the bare name is a coincidence.
+    An alias beats a bare name another repo's spelling happens to yield, because the alias is a name someone wrote down and the bare name is a coincidence.
     """
     tokens: dict[str, str] = {}
     for repo, override in repos.items():
+        claimed = tokens.get(repo.lower())
+        if claimed and claimed != repo:
+            raise ConfigError(
+                f"alias {repo.lower()!r} is claimed by both {claimed} and {repo}"
+            )
         tokens[repo.lower()] = repo
         aliases = override.get("aliases")
         if aliases is not None and (
@@ -744,8 +735,7 @@ def _repo_tokens(repos: dict) -> dict[str, str]:
             raise ConfigError(f"repos.{repo}.aliases must be a list of strings")
         for alias in aliases or []:
             if not alias.strip():
-                # An empty alternation branch matches between any two
-                # characters, so one blank alias makes every pattern match.
+                # An empty alternation branch matches between any two characters, so one blank alias makes every pattern match.
                 raise ConfigError(f"repos.{repo}.aliases has an empty alias")
             claimed = tokens.get(alias.lower())
             if claimed and claimed != repo:
@@ -758,8 +748,7 @@ def _repo_tokens(repos: dict) -> dict[str, str]:
         claimants.setdefault(repo.split("/")[-1].lower(), set()).add(repo)
     for bare, owners in claimants.items():
         if len(owners) == 1:
-            # `setdefault`, so an alias someone wrote down beats a bare name
-            # that falls out of another repo's spelling.
+            # `setdefault`, so an alias someone wrote down beats a bare name that falls out of another repo's spelling.
             tokens.setdefault(bare, next(iter(owners)))
     return tokens
 
@@ -767,11 +756,8 @@ def _repo_tokens(repos: dict) -> dict[str, str]:
 def _compile_infer_pattern(raw: str, alternation: str) -> re.Pattern:
     """One `infer.repo.patterns:` entry to a regex.
 
-    `PLACEHOLDER_RE` has one group, so splitting on it alternates literal text
-    and placeholder names. Literal text is escaped and every placeholder
-    becomes the same alternation of repo names — both placeholders resolve
-    through one table, and having two spellings is only so a config can read
-    the way its author wants it to.
+    `PLACEHOLDER_RE` has one group, so splitting on it alternates literal text and placeholder names.
+    Literal text is escaped and every placeholder becomes the same alternation of repo names — both placeholders resolve through one table, and having two spellings is only so a config can read the way its author wants it to.
     """
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError("every infer.repo pattern must be a non-empty string")
@@ -795,8 +781,7 @@ def _compile_infer_pattern(raw: str, alternation: str) -> re.Pattern:
 def _load_inference(raw, tokens: dict[str, str]) -> Inference:
     """`infer.repo:`, the optional summary-to-repo rule.
 
-    Omitted means `track` never guesses, which is the behaviour that shipped
-    before this block existed.
+    Omitted means `track` never guesses, which is the behaviour that shipped before this block existed.
     """
     if not raw:
         return Inference()
@@ -817,8 +802,7 @@ def _load_inference(raw, tokens: dict[str, str]) -> Inference:
             "infer.repo.patterns has nothing to match: repos: is empty, so no "
             "{alias} or {repo} value exists"
         )
-    # Built once for every pattern: longest first, so `csm-service` wins over
-    # `csm` rather than leaving a stray `-service` to match literally.
+    # Built once for every pattern: longest first, so `csm-service` wins over `csm` rather than leaving a stray `-service` to match literally.
     names = sorted(tokens, key=len, reverse=True)
     alternation = "(" + "|".join(re.escape(name) for name in names) + ")"
     return Inference(
@@ -879,9 +863,7 @@ def load_config(path: Path | None = None) -> Config:
     if not isinstance(wt, dict):
         raise ConfigError("worktrees: must be a mapping")
     _reject_unknown("worktrees:", wt, WORKTREES_KEYS)
-    # Shape-checked before anything reads it, so a bad entry is a ConfigError
-    # from `ticket config --validate` rather than a traceback out of the token
-    # table built below.
+    # Shape-checked before anything reads it, so a bad entry is a ConfigError from `ticket config --validate` rather than a traceback out of the token table built below.
     repos = _load_repos(raw.get("repos"))
     tokens = _repo_tokens(repos)
     cfg = Config(
@@ -909,9 +891,7 @@ def load_config(path: Path | None = None) -> Config:
         inference=_load_inference(raw.get("infer"), tokens),
         repo_tokens=tokens,
     )
-    # Build every repo override eagerly, not just the ones a given run happens
-    # to call `for_repo` on: a repo naming a review or step that does not exist
-    # should fail at load time, before the DAG is ever built for that repo.
+    # Build every repo override eagerly, not just the ones a given run happens to call `for_repo` on: a repo naming a review or step that does not exist should fail at load time, before the DAG is ever built for that repo.
     for repo in cfg.repos:
         cfg.for_repo(repo)
     return cfg

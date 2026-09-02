@@ -205,10 +205,8 @@ def downstream(cfg: Config, step_id: str) -> list[str]:
 def fetch_summary(ctx: Context, key: str, *, dry_run: bool = False) -> str | None:
     """Ask the configured tracker for this ticket's title, or `None` if it cannot.
 
-    No tracker configured, or one whose CLI is not installed on this machine,
-    is the ordinary case rather than an error: the summary is a convenience,
-    and both callers have a job to finish without it. Persisting is the
-    caller's, so neither of them writes the row twice.
+    No tracker configured, or one whose CLI is not installed on this machine, is the ordinary case rather than an error: the summary is a convenience, and both callers have a job to finish without it.
+    Persisting is the caller's, so neither of them writes the row twice.
     """
     argv = ctx.cfg.tracker.summary_argv(key)
     if not argv or not shutil.which(argv[0]):
@@ -223,13 +221,9 @@ def fetch_summary(ctx: Context, key: str, *, dry_run: bool = False) -> str | Non
 def _guess_repo(ctx: Context, ticket: dict) -> RepoGuess:
     """Which repo a ticket is about, read out of its summary.
 
-    The summary is what inference reads, so it is fetched here rather than
-    left to `refresh` (issue #8: the fact that repairs the ticket must not be
-    gated on the ticket being repaired). A config with no patterns has already
-    lost the guess, so it does not pay for the round trip; and a tracker that
-    cannot answer — offline, no VPN, a key it has never heard of — costs the
-    guess, not the row. The fetched summary is recorded on `ticket` for the
-    caller to persist along with whatever it makes of the guess.
+    The summary is what inference reads, so it is fetched here rather than left to `refresh` (issue #8: the fact that repairs the ticket must not be gated on the ticket being repaired).
+    A config with no patterns has already lost the guess, so it does not pay for the round trip; and a tracker that cannot answer — offline, no VPN, a key it has never heard of — costs the guess, not the row.
+    The fetched summary is recorded on `ticket` for the caller to persist along with whatever it makes of the guess.
     """
     if not ctx.cfg.inference.patterns:
         return ctx.cfg.infer_repo(ticket["summary"])
@@ -265,8 +259,7 @@ def cmd_track(args) -> int:
     if ticket["repo"]:
         print(f"tracking {key} in {ticket['repo']}")
         return 0
-    # Not an error: a row with no repo is a ticket you can still `refresh`,
-    # retitle or point by hand, and failing here would strand it unwritten.
+    # Not an error: a row with no repo is a ticket you can still `refresh`, retitle or point by hand, and failing here would strand it unwritten.
     print(f"tracking {key}")
     print(
         f"warning: no repo for {key} — {guess.why}. "
@@ -902,8 +895,7 @@ def cmd_config(args) -> int:
         if cfg.owner:
             print(f"owner: {cfg.owner}")
         if cfg.repos:
-            # Aliases are shown beside the repo they resolve to, because the
-            # question this line answers is "will `--repo CSM` work".
+            # Aliases are shown beside the repo they resolve to, because the question this line answers is "will `--repo CSM` work".
             named = []
             for repo in sorted(cfg.repos):
                 aliases = cfg.aliases_for(repo)

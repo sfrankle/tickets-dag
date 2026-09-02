@@ -732,6 +732,33 @@ def test_an_alias_claimed_by_two_repos_is_an_error(tmp_path):
         load_config(write(tmp_path, text))
 
 
+# The same collision as above, but the alias collides with a repo's own full
+# name declared *after* it, rather than with another alias.
+COLLIDES_WITH_LATER_REPO = textwrap.dedent("""
+    models:
+      opus: claude-opus-5
+
+    defaults:
+      model: opus
+
+    steps:
+      - id: evaluate
+        model: opus
+        prompt: prompts/evaluate.md
+
+    repos:
+      team/widget:
+        aliases: [core/base]
+      core/base: {}
+""")
+
+
+def test_an_alias_claimed_by_a_later_repos_own_name_is_an_error(tmp_path):
+    """Collision detection must not depend on repos: declaration order."""
+    with pytest.raises(ConfigError, match="core/base"):
+        load_config(write(tmp_path, COLLIDES_WITH_LATER_REPO))
+
+
 # The same config, with two owners laying claim to the bare name `api`.
 TWO_OWNERS = INFER.replace(
     """repos:
