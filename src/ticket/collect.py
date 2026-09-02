@@ -25,6 +25,7 @@ from pathlib import Path
 from . import gh
 from .config import Config
 from .effort import assign_effort
+from .errors import TicketError
 from .parse import parse_haiku, parse_script
 from .resolve import _uncollected as next_uncollected
 from .reviews import ensure_pr
@@ -142,6 +143,8 @@ def collect(
                     "author": source["author"],
                     "at": now(),
                     "findings": [],
+                    # The caller prints from this record, so it has to carry the same verb the line above used.
+                    "reread": prior is not None,
                 }
             )
             continue
@@ -196,7 +199,12 @@ def collect(
         seen[source["id"]] = record
         added.append(record)
 
-    for source_id in sorted(forced - {s["id"] for s in sources}):
-        print(f"--recollect {source_id}: no such source on {pr_ref}")
+    missing = sorted(forced - {s["id"] for s in sources})
+    if missing:
+        # Raised after the work above is written, not before: the sources that do exist were collected, and a typo in one id must not throw that away.
+        # It is still an error — a mistyped id that exits 0 reads as success to whatever ran us.
+        raise TicketError(
+            f"--recollect: no such source on {pr_ref}: {', '.join(missing)}"
+        )
 
     return added

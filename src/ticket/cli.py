@@ -254,7 +254,13 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
         added = collect_module.collect(
             ctx.cfg, ctx.store, ticket, pr_ref, dry_run=dry_run
         )
-        print(f"collected {len(added)} new sources" if added else "nothing new yet")
+        fresh = [record for record in added if not record.get("reread")]
+        rereads = len(added) - len(fresh)
+        # Counted apart: a re-read is an old source read again, and folding it in here reports sources that were never new.
+        counts = [f"collected {len(fresh)} new sources"] if fresh else []
+        if rereads:
+            counts.append(f"re-read {rereads}")
+        print(", ".join(counts) if counts else "nothing new yet")
         return 0
     if action.kind == "fix":
         pr_ref = ticket["prs"][-1]
@@ -401,7 +407,7 @@ def cmd_collect(args) -> int:
         dry_run=args.dry_run,
         recollect=args.recollect,
     )
-    pr = inner.store.read_pr(pr_ref) or {}
+    pr = inner.store.read_pr(pr_ref, ticket["key"]) or {}
     # `(not one of ours)` only carries information when some of the sources could have been ours.
     # With nothing dispatched it was on every line.
     ours_are_out = bool(pr.get("dispatched"))

@@ -6,6 +6,7 @@ import pytest
 
 from ticket.collect import collect, outstanding
 from ticket.config import load_config
+from ticket.errors import TicketError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reviews"
 
@@ -401,13 +402,67 @@ def test_recollecting_does_not_duplicate_findings_already_minted(cfg, store, fak
     assert collected[0]["findings"] == ["f01", "f02", "f03"]
 
 
-def test_recollect_of_a_source_that_is_not_on_the_pr_says_so(
-    cfg, store, fake_bin, capsys
-):
+def test_recollect_of_a_source_that_is_not_on_the_pr_is_an_error(cfg, store, fake_bin):
+    """A mistyped source id that exits 0 reads as a successful re-read to whatever ran us."""
     seeded_pr(store)
     fake_bin.respond("gh api repos/acme/api/pulls/115/reviews", stdout="[]")
-    assert collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_9"]) == []
-    assert "PRR_9" in capsys.readouterr().out
+    with pytest.raises(TicketError) as excinfo:
+        collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_9"])
+    assert "PRR_9" in str(excinfo.value)
+
+
+def test_a_source_that_does_exist_is_still_collected_alongside_a_bad_id(
+    cfg, store, fake_bin
+):
+    """The refusal comes after the run, so one wrong id does not throw away the sources that were there."""
+    seeded_pr(store)
+    body = (FIXTURES / "example-review.md").read_text()
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews", stdout=review_payload(body)
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    with pytest.raises(TicketError):
+        collect(cfg, store, ticket_doc(), "acme/api#115", recollect=["PRR_9"])
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert [c["source_id"] for c in collected] == ["PRR_1"]
+    assert collected[0]["findings"] == ["f01", "f02", "f03"]
+
+
+def test_recollect_recovers_findings_a_source_did_not_have_before(cfg, store, fake_bin):
+    """The case --recollect exists for: a source that already produced findings, whose body now holds more of them.
+    The new ones are minted and the record's history is the union, not a replacement."""
+    seeded_pr(store)
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "example-review.md").read_text()),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    ticket = ticket_doc()
+    collect(cfg, store, ticket, "acme/api#115")
+
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "wide-review.md").read_text()),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard"]))
+    records = collect(cfg, store, ticket, "acme/api#115", recollect=["PRR_1"])
+
+    assert [r["findings"] for r in records] == [["f04", "f05"]]
+    collected = store.read_pr("acme/api#115")["collected"]
+    assert len(collected) == 1
+    assert collected[0]["findings"] == ["f01", "f02", "f03", "f04", "f05"]
+    assert len(store.read_findings("acme/api#115")["findings"]) == 5
+
+
+def test_a_dry_run_re_read_is_reported_as_a_re_read(cfg, store, fake_bin):
+    """The caller prints from the returned record, so a dry run that says `would re-read` must not hand back a record that prints as a fresh collection."""
+    collected_pr(store, review="docs-tests")
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=review_payload((FIXTURES / "example-review.md").read_text()),
+    )
+    records = collect(cfg, store, ticket_doc(), "acme/api#115", dry_run=True)
+    assert [r["reread"] for r in records] == [True]
 
 
 def test_collect_does_not_wait_for_an_outstanding_review(cfg, store, fake_bin):

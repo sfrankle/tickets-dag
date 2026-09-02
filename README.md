@@ -119,6 +119,9 @@ A collected source is normally skipped on the next run, with two exceptions.
 A source that produced no findings is re-parsed every time, for free — the re-parse stops at the script parser and never falls back to Haiku — so a parser that has since learned to read that body recovers findings that were previously stranded behind their own source id.
 `ticket collect KEY --recollect <source-id>` (repeatable) forces a full re-read of a named source, Haiku included, which is the case a source that already produced findings needs.
 Neither can duplicate anything: a re-read is deduplicated against the findings already open on the PR, and it updates the source's existing collection record rather than adding a second one.
+That record carries a `reread_at` alongside its original `at`, so the first read and the last re-read of a source are both still readable.
+A re-read that recovers nothing is not recorded as work at all: it prints nothing and rewrites nothing, because a record left empty is exactly the record that gets re-read again next run.
+`--recollect` naming a source that is not on the PR is an error and exits non-zero — the sources that were there are still collected first.
 
 **GitHub is a contract, the tracker is not.** PRs, reviews and comments go through the `gh` CLI, and an `easy` fix rides a Claude GitHub bot's `/review` and `/edit` comment protocol; there is no forge abstraction and none is planned.
 The tracker is the other way round — the engine never learns what one is.
