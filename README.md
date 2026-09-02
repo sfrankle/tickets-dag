@@ -128,8 +128,14 @@ Inference never overwrites a repo already recorded, so re-tracking cannot move a
 `ticket config` prints the resolved config — store, models, worktrees, severities, the declared steps and reviews, the repos with overrides — and `ticket config --validate` reports only what is wrong with it.
 Both exit non-zero when there is a problem, so `--validate` works in a pre-commit hook or CI.
 
-It catches the things that only bite halfway through a run: a `prompt:` or `run:` that is not there, one that cannot be read, a `run:` that is not executable, a `model:` that is not in `models:`, and a `repos.<repo>.path` that is not a directory.
+It catches the things that only bite halfway through a run: a `prompt:` or `run:` that is not there, one that cannot be read, a `run:` that is not executable, and a `model:` that is not in `models:`.
+Steps, reviews and both `fix:` routes are walked alike, so a `fix.easy.run` that is missing is caught now rather than the first time a finding is routed `easy`.
 Anything that stops the file loading at all — a cycle in `needs:`, an unknown model alias, a repo override that strands a dependent — is reported the same way rather than raised as a traceback.
+
+A `repos.<repo>.path` that is not a directory is reported as a warning instead, and does not change the exit code.
+The distinction is who owns the missing thing: a prompt or a script is the config's own, so a missing one means the config is wrong, while a clone is the machine's, and one that has not been made yet — or a placeholder like the `~/code/api` the example ships — is the ordinary state of a config on a fresh machine.
+Nothing is hidden by being a warning: both lists print, and a step that needs the checkout still fails when it runs — `exit 1`, with `No such file or directory` naming the path in its log — so the warning is the earlier telling of the same thing, not a substitute for it.
+That is what lets `examples/config.yml` validate clean out of the box, which is the only reason to trust `--validate` at all.
 
 **An unknown key is an error.**
 A key this loader does not know, at the top level or under any block it does know, fails the load and names itself.

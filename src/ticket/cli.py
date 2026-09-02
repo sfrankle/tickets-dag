@@ -844,7 +844,8 @@ def config_problems(cfg: Config) -> list[str]:
     """Everything wrong with a config that still loaded.
 
     Load-time checks — cycles, unknown keys, an unknown model alias — raise before this is reached; `cmd_config` catches those and reports them the same way.
-    What is left is the filesystem: a step or review that points at a prompt or script which is not there, is not readable, or (for a `run:`) is not executable, and a `repos.<repo>.path` that is not a checkout.
+    What is left is the filesystem: a step, review or `fix:` route that points at a prompt or script which is not there, is not readable, or (for a `run:`) is not executable.
+    Each of those is the config being wrong about itself — it names a file it ships, and the file is missing — so each is a problem, and `--validate` exits non-zero.
     """
     problems: list[str] = []
 
@@ -870,11 +871,29 @@ def config_problems(cfg: Config) -> list[str]:
             problems.append(
                 f"review {review.id}: model {review.model} is not in models:"
             )
+    # `fix:` is not a step — a fix is not in the DAG — but its two paths are read off the config exactly as a step's are, and a missing one breaks a run the same way, only later: not until a finding is routed. `fix.model` is checked at load, so it is not repeated here.
+    if cfg.fix.easy_run:
+        check("fix.easy", "run", cfg.fix.easy_run, executable=True)
+    if cfg.fix.hard_prompt:
+        check("fix.hard", "prompt", cfg.fix.hard_prompt)
+    return problems
+
+
+def config_warnings(cfg: Config) -> list[str]:
+    """Everything worth saying about a config that is nonetheless correct.
+
+    The distinction against `config_problems` is who owns the missing thing.
+    A prompt or script is the config's own: it names one, and if it is not there the config is wrong.
+    A `repos.<repo>.path` is a machine's: it names a clone, and a clone that is not made yet — or a placeholder like the `~/code/api` `examples/config.yml` ships — is the normal state of a config on a machine that has not been set up, not an error in the file (#23.3).
+
+    Nothing is swallowed by being a warning. Both lists are printed, and a step that actually needs the checkout still fails at the point of use: `steps.workdir` hands the recorded path to `subprocess` as its `cwd` without checking it, so the run ends `exit 1` with `No such file or directory: <path>` in its log. The warning is the earlier, cheaper telling of the same thing.
+    """
+    warnings: list[str] = []
     for repo in cfg.repos:
         path = cfg.repo_path(repo)
         if path and not path.is_dir():
-            problems.append(f"repos.{repo}: path {path} is not a directory")
-    return problems
+            warnings.append(f"repos.{repo}: path {path} is not a directory")
+    return warnings
 
 
 def cmd_config(args) -> int:
@@ -893,7 +912,12 @@ def cmd_config(args) -> int:
         if args.json:
             print(
                 json.dumps(
-                    {"path": str(path), "valid": False, "problems": [str(exc)]},
+                    {
+                        "path": str(path),
+                        "valid": False,
+                        "problems": [str(exc)],
+                        "warnings": [],
+                    },
                     indent=2,
                 )
             )
@@ -903,6 +927,7 @@ def cmd_config(args) -> int:
         return 1
 
     problems = config_problems(cfg)
+    warnings = config_warnings(cfg)
     if args.json:
         print(
             json.dumps(
@@ -911,6 +936,7 @@ def cmd_config(args) -> int:
                     "store": str(cfg.store),
                     "valid": not problems,
                     "problems": problems,
+                    "warnings": warnings,
                     "models": cfg.models,
                     "default_model": cfg.default_model,
                     "sync": cfg.sync,
@@ -961,12 +987,17 @@ def cmd_config(args) -> int:
         if cfg.inference.patterns:
             count = len(cfg.inference.patterns)
             print(f"infer.repo: {count} pattern{'s' if count > 1 else ''}")
+    # Warnings first, so the last line printed is always the one the exit code is about.
+    if warnings:
+        print(f"{len(warnings)} warning{'s' if len(warnings) > 1 else ''}")
+        for warning in warnings:
+            print(f"  {warning}")
     if problems:
         print(f"invalid: {len(problems)} problem{'s' if len(problems) > 1 else ''}")
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print("ok")
+    print("valid, with warnings" if warnings else "ok")
     return 0
 
 
