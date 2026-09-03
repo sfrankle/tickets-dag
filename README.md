@@ -61,6 +61,7 @@ ticket track ABC-123               # the repo comes from the summary
 ticket track ABC-123 --repo acme/api            # ...or say it outright
 ticket refresh                    # fetch, fast-forward, and re-read every row
 ticket next ABC-123               # run whatever the resolver says is next
+ticket next ABC-123 --pr 114      # ...against an older PR, from here on
 ticket reset ABC-123 implement    # re-run a step and everything below it
 ticket log ABC-123 implement      # what that step's last run wrote
 ticket open ABC-123               # the PR in a browser (--pr for an older one)
@@ -80,11 +81,20 @@ ticket findings ABC-123
 ticket reviews ABC-123            # every review on the PR, ours and theirs
 ticket fix ABC-123                # work the next finding, routed by effort
 ticket fix ABC-123 --no-wait      # hand it off without waiting for the commit
+                                  # (`next` takes --no-wait too, and waits by default)
 ticket effort ABC-123 f02 hard    # override how a finding gets fixed
 ticket attribute ABC-123 5049842015 docs-tests   # say which dispatch a source answered
 ticket decide ABC-123 f03 "covered by ABC-140"
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 ```
+
+**`--pr` selects; it does not override.**
+A key can carry several PRs, and `--pr` says which one is being worked — on any verb that takes it, including `next`.
+The choice sticks: the commands after it act on that PR too, until something moves the pointer again.
+Nothing here records whether a PR is open, merged or abandoned, so which one to work is a person's call rather than something the engine guesses; the newest registration is only the default.
+Two things move the pointer without being asked: a step that registers a PR selects it, because opening one is a statement about which PR is being worked, and a `reset` that drops a PR clears a pointer that named it.
+A `--dry-run` resolves a `--pr` without moving anything — including a `--pr` the ticket has never had, which it reports rather than leaving for the real run to discover.
+The move is written once the command it was given to has returned: one rejected for its own reasons, like an unknown review id, leaves every later run where it was.
 
 **The key comes first, always.**
 `run`, `skip` and `release` used to read `<step> <key>` while every other verb read `<key>` first, so `ticket skip ABC-123 evaluate` looked up a ticket named `evaluate` and answered "evaluate is not tracked" about a step `ticket show` had just called `next` (issue #12).

@@ -3,7 +3,7 @@ import textwrap
 import pytest
 
 from ticket.config import load_config
-from ticket.resolve import next_action, orphan_steps
+from ticket.resolve import active_pr, next_action, orphan_steps
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -375,3 +375,23 @@ def test_orphaned_recorded_steps_do_not_satisfy_anything(cfg):
     ticket = ticket_doc(steps=done("jira-sync", "worktree"))
     action = next_action(cfg, ticket, None, None)
     assert (action.kind, action.target) == ("step", "evaluate")
+
+
+def test_active_pr_is_the_newest_registered_pr_by_default():
+    """No `active` key is the shape every ticket written before selection existed has, and the rule it was written under was `prs[-1]`."""
+    assert active_pr({"prs": ["acme/api#114", "acme/api#131"]}) == "acme/api#131"
+
+
+def test_active_pr_honours_an_explicit_selection():
+    ticket = {"prs": ["acme/api#114", "acme/api#131"], "active": "acme/api#114"}
+    assert active_pr(ticket) == "acme/api#114"
+
+
+def test_an_active_pr_no_longer_registered_falls_back_to_the_newest():
+    """A selection can outlive the ref it names — `reset` and a hand-edited state file both do it. Resolving against a PR the ticket no longer claims would read findings nothing can reach."""
+    ticket = {"prs": ["acme/api#131"], "active": "acme/api#114"}
+    assert active_pr(ticket) == "acme/api#131"
+
+
+def test_a_ticket_with_no_prs_has_no_active_pr():
+    assert active_pr({"prs": [], "active": "acme/api#114"}) is None

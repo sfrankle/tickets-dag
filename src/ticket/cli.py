@@ -30,7 +30,7 @@ from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, RepoGuess, config_path, load_config
 from .effort import EFFORTS
-from .errors import GhError, TicketError
+from .errors import GhError, StoreError, TicketError
 from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
 from .store import Store, now
 
@@ -51,7 +51,11 @@ def is_safe_key(key: str) -> bool:
 
 
 # Verbs that change something. `main` takes the per-ticket advisory lock around
-# these, and only these, so two runs on one ticket cannot interleave writes.
+# these, so two runs on one ticket cannot interleave writes. A read verb stays
+# out, `--pr` or not: naming a PR is how you read the *other* PR's findings,
+# and a `fix` holding the lock for as long as its fixer runs is exactly when
+# someone wants to. The one write such a verb does — the selection itself —
+# takes the lock on its own, for the length of that write (see `pick_pr`).
 WRITE_VERBS = {
     "track",
     "next",
@@ -100,8 +104,14 @@ def scoped(ctx: Context, ticket: dict) -> Context:
     return Context(cfg=ctx.cfg.for_repo(ticket.get("repo", "")), store=ctx.store)
 
 
-def resolve_for(ctx: Context, ticket: dict) -> Action:
-    pr_ref = active_pr(ticket)
+def resolve_for(ctx: Context, ticket: dict, pr_ref: str | None = None) -> Action:
+    """What to do next, against one PR.
+
+    The caller may name the PR, because a `--pr` under `--dry-run` selects
+    nothing: resolving against the stored pointer there would answer a question
+    about a different PR than the one the command is about to act on.
+    """
+    pr_ref = pr_ref or active_pr(ticket)
     # A missing PR document reads as an empty one: it is only written on the
     # first dispatch, and the first review is due before that.
     pr = (ctx.store.read_pr(pr_ref, ticket["key"]) or {}) if pr_ref else None
@@ -172,19 +182,91 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     return 0
 
 
-def pick_pr(ticket: dict, args) -> str:
+def pick_pr(ctx: Context, ticket: dict, args) -> str:
+    """The PR this command acts on — and, when `--pr` says so, every command after it.
+
+    `--pr` selects rather than overrides. A key with two PRs is worked one at a
+    time, and a flag that lasted exactly one command would have to be repeated
+    on `fix`, then `collect`, then `fix` again, with the run that forgets it
+    silently acting on the other PR. So it moves `active_pr`'s pointer and the
+    move sticks until something moves it back.
+
+    A dry run resolves the ref without moving anything: it is the verb for
+    asking what would happen, and answering that question must not change what
+    happens next.
+
+    The move is made in memory here and written by `main`, once the verb has
+    returned cleanly. A command rejected for its own reasons — an unknown
+    review id, a `next` that turns out not to be a fix — has done nothing, and
+    silently re-pointing every later run off the back of it is a surprise
+    nobody asked for. The in-memory move happens now regardless, because the
+    run itself has to act on the PR it was given, `TICKET_PR` included.
+    """
     prs = ticket.get("prs") or []
     if not prs:
         raise TicketError(f"{ticket['key']} has no PR yet")
     wanted = getattr(args, "pr", None)
     if not wanted:
-        return prs[-1]
+        return active_pr(ticket)
     matches = [p for p in prs if p.endswith(f"#{wanted}")]
     if not matches:
         raise TicketError(
             f"{ticket['key']} has no PR #{wanted}. Known: {', '.join(prs)}"
         )
-    return matches[0]
+    selected = matches[0]
+    if not getattr(args, "dry_run", False) and ticket.get("active") != selected:
+        ticket["active"] = selected
+        _selection.defer(ctx.store, ticket)
+    return selected
+
+
+class _PendingSelection:
+    """A `--pr` pointer move, held until the verb it was given to has returned
+    cleanly. Module level because `main` is the only place that knows the verb
+    succeeded, and it has no access to the command's `Context`.
+    """
+
+    def __init__(self) -> None:
+        self.move: tuple[Store, dict] | None = None
+
+    def defer(self, store: Store, ticket: dict) -> None:
+        self.move = (store, ticket)
+
+    def clear(self) -> None:
+        self.move = None
+
+    def take(self) -> tuple[Store, dict] | None:
+        """The held move, if any, leaving nothing behind for the next call."""
+        move, self.move = self.move, None
+        return move
+
+
+_selection = _PendingSelection()
+
+
+def _commit_selection(*, locked: bool) -> None:
+    """Write the deferred `--pr` selection, if the verb left one.
+
+    `locked` says whether `main` is already inside this ticket's lock, which
+    it is for every write verb. A read verb given `--pr` is not, and takes the
+    lock here — for the length of one write, rather than across a whole
+    command someone is running precisely because a fix is holding it.
+    """
+    pending = _selection.take()
+    if pending is None:
+        return
+    store, ticket = pending
+    if locked:
+        store.write_ticket(ticket)
+        return
+    try:
+        with store.lock(ticket["key"]):
+            store.write_ticket(ticket)
+    except StoreError as exc:
+        # Whatever the command was actually for has already happened and is
+        # correct. Losing the pointer move is worth saying out loud; failing
+        # the command over it is not.
+        print(f"selection not saved: {exc}", file=sys.stderr)
 
 
 def downstream(cfg: Config, step_id: str) -> list[str]:
@@ -280,7 +362,27 @@ def cmd_queue(args) -> int:
     return print_queue(Context.load(no_sync=getattr(args, "no_sync", False)), args.json)
 
 
-def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
+def _execute(
+    ctx: Context,
+    ticket: dict,
+    action: Action,
+    pr_ref: str | None,
+    *,
+    dry_run: bool,
+    wait: bool = True,
+) -> int:
+    """Forward the resolved action to the verb that owns it.
+
+    Every branch here is a call into the same function `ticket review`, `ticket
+    collect`, `ticket fix` and `ticket run` call. `next` used to carry its own
+    copy of each, which is how its fix branch ended up not waiting (#23.2) and
+    its collect branch ended up printing a different summary: two
+    implementations of one action drift, and nothing tells you when they have.
+    So `next` decides *which* action, and nothing about *how* it runs.
+
+    Gate and rest are the exceptions, because they are the two answers no verb
+    owns: there is nothing to run.
+    """
     if action.kind == "gate":
         print(
             f"parked at {action.target}. Release with: ticket release {ticket['key']} {action.target}"
@@ -290,49 +392,13 @@ def _execute(ctx: Context, ticket: dict, action: Action, dry_run: bool) -> int:
         print(f"at rest: {action.reason}")
         return 0
     if action.kind == "step":
-        step = ctx.cfg.step(action.target)
-        result = steps_module.run_step(
-            ctx.cfg, ctx.store, ticket, step, dry_run=dry_run
-        )
-        if result.pr:
-            print(f"registered PR {result.pr}")
-        if result.status == "failed":
-            print(
-                f"{step.id} failed (exit {result.exit_code}). Log: {result.log}",
-                file=sys.stderr,
-            )
-            return 1
-        if result.status != "dry-run":
-            print(f"{step.id} {result.status}")
-        return 0
+        return run_named_step(ctx, ticket, ctx.cfg.step(action.target), dry_run)
     if action.kind == "review":
-        review = ctx.cfg.review(action.target)
-        pr_ref = ticket["prs"][-1]
-        reviews_module.dispatch(
-            ctx.cfg, ctx.store, ticket, pr_ref, review, dry_run=dry_run
-        )
-        print(f"dispatched {review.id} ({review.dispatch}) on {pr_ref}")
-        return 0
+        return run_review(ctx, ticket, pr_ref, ctx.cfg.review(action.target), dry_run)
     if action.kind == "collect":
-        pr_ref = ticket["prs"][-1]
-        added = collect_module.collect(
-            ctx.cfg, ctx.store, ticket, pr_ref, dry_run=dry_run
-        )
-        fresh = [record for record in added if not record.get("reread")]
-        rereads = len(added) - len(fresh)
-        # Counted apart: a re-read is an old source read again, and folding it in here reports sources that were never new.
-        counts = [f"collected {len(fresh)} new sources"] if fresh else []
-        if rereads:
-            counts.append(f"re-read {rereads}")
-        print(", ".join(counts) if counts else "nothing new yet")
-        return 0
+        return run_collect(ctx, ticket, pr_ref, dry_run)
     if action.kind == "fix":
-        pr_ref = ticket["prs"][-1]
-        status = fix_module.fix_one(
-            ctx.cfg, ctx.store, ticket, pr_ref, action.target, dry_run=dry_run
-        )
-        print(f"{action.target}: {status}")
-        return 0
+        return run_fix(ctx, ticket, pr_ref, action.target, dry_run=dry_run, wait=wait)
     raise TicketError(f"unhandled action {action.kind}")
 
 
@@ -355,8 +421,34 @@ def cmd_next(args) -> int:
     ticket = load_ticket(ctx, args.key)
     warn_about_orphans(ctx, ticket)
     inner = scoped(ctx, ticket)
-    action = resolve_for(inner, ticket)
-    return _execute(inner, ticket, action, args.dry_run)
+    # Selection before resolution: `--pr` decides which PR's reviews and
+    # findings the resolver is even looking at.
+    # An explicit `--pr` still goes through `pick_pr` on a ticket with no PRs,
+    # so it is answered rather than ignored.
+    pr_ref = (
+        pick_pr(inner, ticket, args)
+        if ticket.get("prs") or getattr(args, "pr", None)
+        else None
+    )
+    action = resolve_for(inner, ticket, pr_ref)
+    return _execute(
+        inner, ticket, action, pr_ref, dry_run=args.dry_run, wait=not args.no_wait
+    )
+
+
+def run_named_step(ctx: Context, ticket: dict, step, dry_run: bool) -> int:
+    result = steps_module.run_step(ctx.cfg, ctx.store, ticket, step, dry_run=dry_run)
+    if result.pr:
+        print(f"registered PR {result.pr}")
+    if result.status == "failed":
+        print(
+            f"{step.id} failed (exit {result.exit_code}). Log: {result.log}",
+            file=sys.stderr,
+        )
+        return 1
+    if result.status != "dry-run":
+        print(f"{step.id} {result.status}")
+    return 0
 
 
 def cmd_run(args) -> int:
@@ -369,20 +461,7 @@ def cmd_run(args) -> int:
             f"{step.id} is a gate. Release it with: ticket release {args.key} {step.id}"
         )
         return 0
-    result = steps_module.run_step(
-        inner.cfg, inner.store, ticket, step, dry_run=args.dry_run
-    )
-    if result.pr:
-        print(f"registered PR {result.pr}")
-    if result.status == "failed":
-        print(
-            f"{step.id} failed (exit {result.exit_code}). Log: {result.log}",
-            file=sys.stderr,
-        )
-        return 1
-    if result.status != "dry-run":
-        print(f"{step.id} {result.status}")
-    return 0
+    return run_named_step(inner, ticket, step, args.dry_run)
 
 
 def cmd_skip(args) -> int:
@@ -433,7 +512,7 @@ def cmd_attribute(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
-    pr_ref = pick_pr(ticket, args)
+    pr_ref = pick_pr(inner, ticket, args)
     # `none` rather than a flag: the argument is "which dispatch did this answer", and "none of ours" is one of the answers.
     review = None if args.review == "none" else args.review
     if review is not None and review not in {r.id for r in inner.cfg.reviews}:
@@ -464,39 +543,43 @@ def cmd_release(args) -> int:
     return 0
 
 
-def cmd_review(args) -> int:
-    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
-    ticket = load_ticket(ctx, args.key)
-    inner = scoped(ctx, ticket)
-    pr_ref = pick_pr(ticket, args)
-    if args.review:
-        review = inner.cfg.review(args.review)
-    else:
-        action = resolve_for(inner, ticket)
-        if action.kind != "review":
-            raise TicketError(f"next is `{action.kind}`, not a review: {action.reason}")
-        review = inner.cfg.review(action.target)
-    reviews_module.dispatch(
-        inner.cfg, inner.store, ticket, pr_ref, review, dry_run=args.dry_run
-    )
+def run_review(ctx: Context, ticket: dict, pr_ref: str, review, dry_run: bool) -> int:
+    reviews_module.dispatch(ctx.cfg, ctx.store, ticket, pr_ref, review, dry_run=dry_run)
     print(f"dispatched {review.id} ({review.dispatch}) on {pr_ref}")
     return 0
 
 
-def cmd_collect(args) -> int:
+def cmd_review(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
-    pr_ref = pick_pr(ticket, args)
+    pr_ref = pick_pr(inner, ticket, args)
+    if args.review:
+        review = inner.cfg.review(args.review)
+    else:
+        action = resolve_for(inner, ticket, pr_ref)
+        if action.kind != "review":
+            raise TicketError(f"next is `{action.kind}`, not a review: {action.reason}")
+        review = inner.cfg.review(action.target)
+    return run_review(inner, ticket, pr_ref, review, args.dry_run)
+
+
+def run_collect(
+    ctx: Context,
+    ticket: dict,
+    pr_ref: str,
+    dry_run: bool,
+    recollect: list[str] | None = None,
+) -> int:
     added = collect_module.collect(
-        inner.cfg,
-        inner.store,
+        ctx.cfg,
+        ctx.store,
         ticket,
         pr_ref,
-        dry_run=args.dry_run,
-        recollect=args.recollect,
+        dry_run=dry_run,
+        recollect=recollect,
     )
-    pr = inner.store.read_pr(pr_ref, ticket["key"]) or {}
+    pr = ctx.store.read_pr(pr_ref, ticket["key"]) or {}
     # `(not one of ours)` only carries information when some of the sources could have been ours.
     # With nothing dispatched it was on every line.
     ours_are_out = bool(pr.get("dispatched"))
@@ -520,7 +603,91 @@ def cmd_collect(args) -> int:
         print(
             f"not waiting for {pending}: not collected yet."
             f" Collect again once it posts; if it has posted and was recorded as none of ours,"
-            f" `ticket attribute {args.key} <source-id> {pending}` says so and `ticket skip {pending}` drops it."
+            f" `ticket attribute {ticket['key']} <source-id> {pending}` says so and `ticket skip {pending}` drops it."
+        )
+    return 0
+
+
+def cmd_collect(args) -> int:
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+    ticket = load_ticket(ctx, args.key)
+    inner = scoped(ctx, ticket)
+    return run_collect(
+        inner,
+        ticket,
+        pick_pr(inner, ticket, args),
+        args.dry_run,
+        recollect=args.recollect,
+    )
+
+
+def run_fix(
+    ctx: Context,
+    ticket: dict,
+    pr_ref: str,
+    finding_id: str,
+    *,
+    dry_run: bool,
+    force: bool = False,
+    wait: bool = True,
+) -> int:
+    """One run, one finding: hand it off, wait for the commit, say whether it landed.
+
+    `ticket fix` and `ticket next` both end up here. They used to each have
+    their own copy, and the copies disagreed — `next` handed the finding off and
+    returned, so it reported `open` for a fix that landed seconds later (#23.2).
+    Waiting is a property of the work, not of which verb asked for it.
+    """
+    key = ticket["key"]
+    queue = {f["id"]: f for f in ctx.store.read_findings(pr_ref)["findings"]}
+    effort = (queue.get(finding_id) or {}).get("effort")
+    remaining = [f["id"] for f in open_findings(ctx.store.read_findings(pr_ref))]
+
+    # An easy fix is committed by someone else, on the remote, minutes later, so this run waits for that commit rather than leaving the next run to hand out another finding on top of a job still in flight.
+    # A hard fix commits locally: the remote head never moves, so waiting on it would poll until it gave up.
+    wait_here = effort == "easy" and wait and not dry_run
+    before = None
+    if wait_here:
+        # The live head, not the stored one: the stored value is None for a PR we have only ever collected from, and stale once an earlier fix moved the head.
+        # Either makes the wait below return immediately.
+        before = gh.pr_head(pr_ref)
+
+    status = fix_module.fix_one(
+        ctx.cfg,
+        ctx.store,
+        ticket,
+        pr_ref,
+        finding_id,
+        dry_run=dry_run,
+        force=force,
+    )
+    print(f"{finding_id}: {status}")
+    if dry_run or status == "resolved":
+        return 0
+
+    if not wait_here:
+        if effort == "easy":
+            print(
+                f"{finding_id}: not waiting (--no-wait). It is with the fixer; run "
+                f"`ticket fix {key}` again once its commit lands."
+            )
+        return 0
+
+    head = fix_module.wait_for_head(pr_ref, before)
+    # ensure_pr, not read_pr: the document does not exist yet when the finding came from a source we only ever collected.
+    pr = reviews_module.ensure_pr(ctx.store, ticket, pr_ref)
+    pr["head"] = head
+    ctx.store.write_pr(pr)
+    closed = fix_module.resolve_from_git(ctx.cfg, ctx.store, ticket, pr_ref)
+    if finding_id in closed:
+        print(f"{finding_id}: resolved")
+        left = [f for f in remaining if f != finding_id]
+        if left:
+            print(f"{len(left)} finding(s) still open. Next: ticket fix {key}")
+    else:
+        print(
+            f"{finding_id}: still open — {head[:7]} carries no trailer for it. "
+            f"Check the PR, then re-send with: ticket fix {key} {finding_id} --force"
         )
     return 0
 
@@ -534,76 +701,38 @@ def cmd_fix(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
-    pr_ref = pick_pr(ticket, args)
+    pr_ref = pick_pr(inner, ticket, args)
 
     if args.finding:
         finding_id = args.finding
     else:
-        action = resolve_for(inner, ticket)
+        action = resolve_for(inner, ticket, pr_ref)
         if action.kind != "fix":
             raise TicketError(f"next is `{action.kind}`, not a fix: {action.reason}")
         finding_id = action.target
 
-    queue = {f["id"]: f for f in inner.store.read_findings(pr_ref)["findings"]}
-    effort = (queue.get(finding_id) or {}).get("effort")
-    remaining = [f["id"] for f in open_findings(inner.store.read_findings(pr_ref))]
-
-    # An easy fix is committed by someone else, on the remote, minutes later, so this run waits for that commit rather than leaving the next run to hand out another finding on top of a job still in flight.
-    # A hard fix commits locally: the remote head never moves, so waiting on it would poll until it gave up.
-    wait_here = effort == "easy" and not args.no_wait and not args.dry_run
-    before = None
-    if wait_here:
-        # The live head, not the stored one: the stored value is None for a PR we have only ever collected from, and stale once an earlier fix moved the head.
-        # Either makes the wait below return immediately.
-        before = gh.pr_head(pr_ref)
-
-    status = fix_module.fix_one(
-        inner.cfg,
-        inner.store,
+    return run_fix(
+        inner,
         ticket,
         pr_ref,
         finding_id,
         dry_run=args.dry_run,
         force=args.force,
+        wait=not args.no_wait,
     )
-    print(f"{finding_id}: {status}")
-    if args.dry_run or status == "resolved":
-        return 0
-
-    if not wait_here:
-        if effort == "easy":
-            print(
-                f"{finding_id}: not waiting (--no-wait). It is with the fixer; run "
-                f"`ticket fix {args.key}` again once its commit lands."
-            )
-        return 0
-
-    head = fix_module.wait_for_head(pr_ref, before)
-    # ensure_pr, not read_pr: the document does not exist yet when the finding came from a source we only ever collected.
-    pr = reviews_module.ensure_pr(inner.store, ticket, pr_ref)
-    pr["head"] = head
-    inner.store.write_pr(pr)
-    closed = fix_module.resolve_from_git(inner.cfg, inner.store, ticket, pr_ref)
-    if finding_id in closed:
-        print(f"{finding_id}: resolved")
-        left = [f for f in remaining if f != finding_id]
-        if left:
-            print(f"{len(left)} finding(s) still open. Next: ticket fix {args.key}")
-    else:
-        print(
-            f"{finding_id}: still open — {head[:7]} carries no trailer for it. "
-            f"Check the PR, then re-send with: ticket fix {args.key} {finding_id} --force"
-        )
-    return 0
 
 
 def cmd_decide(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
+    # Resolved before the dry run answers: a `--pr` the ticket has never had is
+    # the first thing a dry run should report, not something the real run
+    # discovers later.
+    pr_ref = pick_pr(ctx, ticket, args)
     if args.dry_run:
         print(f"[dry-run] would close {args.finding} as wontfix")
         return 0
-    fix_module.decide(ctx.store, pick_pr(ticket, args), args.finding, args.reason)
+    fix_module.decide(ctx.store, pr_ref, args.finding, args.reason)
     print(f"{args.finding}: wontfix — {args.reason}")
     return 0
 
@@ -611,10 +740,11 @@ def cmd_decide(args) -> int:
 def cmd_effort(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
+    pr_ref = pick_pr(ctx, ticket, args)
     if args.dry_run:
         print(f"[dry-run] would set {args.finding} to {args.value}")
         return 0
-    fix_module.set_effort(ctx.store, pick_pr(ticket, args), args.finding, args.value)
+    fix_module.set_effort(ctx.store, pr_ref, args.finding, args.value)
     print(f"{args.finding}: {args.value}")
     return 0
 
@@ -622,7 +752,7 @@ def cmd_effort(args) -> int:
 def cmd_findings(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
-    doc = ctx.store.read_findings(pick_pr(ticket, args))
+    doc = ctx.store.read_findings(pick_pr(ctx, ticket, args))
     if args.json:
         print(json.dumps(doc["findings"], indent=2))
         return 0
@@ -647,7 +777,7 @@ def cmd_reviews(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
     inner = scoped(ctx, ticket)
-    pr_ref = pick_pr(ticket, args)
+    pr_ref = pick_pr(inner, ticket, args)
     pr = inner.store.read_pr(pr_ref, ticket["key"]) or reviews_module.ensure_pr(
         inner.store, ticket, pr_ref
     )
@@ -685,7 +815,7 @@ def cmd_open(args) -> int:
         # wants its stricter error.
         print(f"{args.key} has no PR yet")
         return 0
-    repo, number = gh.split_ref(pick_pr(ticket, args))
+    repo, number = gh.split_ref(pick_pr(ctx, ticket, args))
     gh.run(["gh", "pr", "view", number, "--repo", repo, "--web"], retries=1)
     return 0
 
@@ -723,9 +853,8 @@ def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
         print(
             f"{ticket['key']} sync: {reason}" if reason else f"{ticket['key']} synced"
         )
-    prs = ticket.get("prs") or []
-    if prs:
-        pr_ref = prs[-1]
+    pr_ref = active_pr(ticket)
+    if pr_ref:
         pr = reviews_module.ensure_pr(ctx.store, ticket, pr_ref)
         pr["head"] = gh.pr_head(pr_ref)
         if dry_run:
@@ -782,6 +911,12 @@ def cmd_reset(args) -> int:
         registered_pr = record.get("registered_pr")
         if registered_pr and registered_pr in (ticket.get("prs") or []):
             ticket["prs"].remove(registered_pr)
+            # A pointer at a dropped ref is dormant rather than gone:
+            # `active_pr` ignores it, but a re-run of the same step registers
+            # the same ref and the stale pointer wakes up, re-selecting a PR
+            # nobody chose.
+            if ticket.get("active") == registered_pr:
+                ticket.pop("active", None)
         if record.get("registered_worktree") == ticket.get("worktree"):
             ticket.pop("worktree", None)
     inner.store.write_ticket(ticket)
@@ -1107,6 +1242,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("next", cmd_next, help="run whatever the resolver says is next")
     p.add_argument("key")
+    p.add_argument("--pr")
+    p.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="when the next action is a fix, hand it off without waiting for its commit",
+    )
     p.add_argument("--dry-run", action="store_true")
 
     p = add("run", cmd_run, help="run or re-run a named step")
@@ -1297,14 +1438,28 @@ def main(argv: list[str] | None = None) -> int:
                 f"directory name, so it cannot be empty, contain whitespace or "
                 f"a path separator, or start with '-'."
             )
-        if args.verb in WRITE_VERBS and key and not getattr(args, "dry_run", False):
+        # `--pr` writes the selection, so a read verb carrying one needs the
+        # lock too. Only when it is actually given: taking it unconditionally
+        # would stop `ticket findings` being readable while a fix runs, which
+        # is exactly when someone wants to read them.
+        # A stale move from an earlier in-process call is not this one's.
+        _selection.clear()
+        writing = args.verb in WRITE_VERBS
+        if writing and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
             with store.lock(key):
-                return args.func(args)
-        return args.func(args)
+                return _dispatch(args, locked=True)
+        return _dispatch(args, locked=False)
     except TicketError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+
+def _dispatch(args, *, locked: bool) -> int:
+    """Run the verb, then write the selection it asked for if it succeeded."""
+    code = args.func(args)
+    _commit_selection(locked=locked)
+    return code
 
 
 if __name__ == "__main__":
