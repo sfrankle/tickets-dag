@@ -395,3 +395,30 @@ def test_an_active_pr_no_longer_registered_falls_back_to_the_newest():
 
 def test_a_ticket_with_no_prs_has_no_active_pr():
     assert active_pr({"prs": [], "active": "acme/api#114"}) is None
+
+
+# --- the view and the resolver read one vocabulary -------------------------
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [
+        {"dispatched": [{"review": "a"}], "collected": []},
+        {
+            "dispatched": [{"review": "a"}, {"review": "a"}],
+            "collected": [{"review": "a"}],
+        },
+        {"dispatched": [{"review": "a"}], "collected": [], "skipped": ["a"]},
+        {"dispatched": [{"review": "a"}], "collected": [{"review": "a"}]},
+        {},
+    ],
+)
+def test_a_dispatched_review_is_exactly_one_the_resolver_would_collect(pr):
+    """`view.row` names a review `dispatched`; `next` says `collect`.
+
+    Two readings of one PR document, so they are asserted against each other
+    rather than trusted to stay in step (#28).
+    """
+    from ticket.resolve import _uncollected, review_status
+
+    assert (review_status(pr, "a") == "dispatched") == (_uncollected(pr) == "a")
