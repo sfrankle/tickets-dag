@@ -53,18 +53,40 @@ def scoped(ctx: Context, ticket: dict) -> Context:
     return Context(cfg=ctx.cfg.for_repo(ticket.get("repo", "")), store=ctx.store)
 
 
-def resolve_for(ctx: Context, ticket: dict, pr_ref: str | None = None) -> Action:
+def documents(
+    ctx: Context, ticket: dict, pr_ref: str | None
+) -> tuple[dict | None, dict | None]:
+    """The PR document and its findings, or `(None, None)` before the first PR.
+
+    One read apiece, so a caller that needs both the resolver's answer and the
+    documents behind it can hand them to `resolve_for` rather than reading the
+    same two files twice.
+    """
+    if not pr_ref:
+        return None, None
+    # A missing PR document reads as an empty one: it is only written on the
+    # first dispatch, and the first review is due before that.
+    return (
+        ctx.store.read_pr(pr_ref, ticket["key"]) or {},
+        ctx.store.read_findings(pr_ref, ticket["key"]),
+    )
+
+
+def resolve_for(
+    ctx: Context,
+    ticket: dict,
+    pr_ref: str | None = None,
+    documents_read: tuple[dict | None, dict | None] | None = None,
+) -> Action:
     """What to do next, against one PR.
 
     The caller may name the PR, because a `--pr` under `--dry-run` selects
     nothing: resolving against the stored pointer there would answer a question
-    about a different PR than the one the command is about to act on.
+    about a different PR than the one the command is about to act on. It may
+    also pass documents it has already read, for the same PR.
     """
     pr_ref = pr_ref or active_pr(ticket)
-    # A missing PR document reads as an empty one: it is only written on the
-    # first dispatch, and the first review is due before that.
-    pr = (ctx.store.read_pr(pr_ref, ticket["key"]) or {}) if pr_ref else None
-    findings = ctx.store.read_findings(pr_ref, ticket["key"]) if pr_ref else None
+    pr, findings = documents_read or documents(ctx, ticket, pr_ref)
     return next_action(ctx.cfg, ticket, pr, findings)
 
 
@@ -96,16 +118,15 @@ def _steps(ctx: Context, ticket: dict) -> list[dict]:
     return entries
 
 
-def _reviews(ctx: Context, ticket: dict, pr_ref: str | None) -> list[dict]:
+def _reviews(ctx: Context, pr: dict | None) -> list[dict]:
     """One entry per declared review, in `order`, empty until there is a PR.
 
     A review's state lives on the PR document, so before the first PR there is
     nothing to say — `pending` for every review would read as a claim about a
     diff that does not exist yet.
     """
-    if not pr_ref:
+    if pr is None:
         return []
-    pr = ctx.store.read_pr(pr_ref, ticket["key"]) or {}
     return [
         {"id": review.id, "status": review_status(pr, review.id)}
         for review in ctx.cfg.reviews
@@ -114,12 +135,16 @@ def _reviews(ctx: Context, ticket: dict, pr_ref: str | None) -> list[dict]:
 
 def row(ctx: Context, ticket: dict) -> dict:
     inner = scoped(ctx, ticket)
-    action = resolve_for(inner, ticket)
     pr_ref = active_pr(ticket)
-    findings = (
-        inner.store.read_findings(pr_ref, ticket["key"]) if pr_ref else {"findings": []}
-    )
-    open_findings = [f for f in findings["findings"] if f.get("status") == "open"]
+    # Read once and hand the same two documents to the resolver: `row` is the
+    # whole contract, so it should not cost twice the reads to build.
+    pr, findings = documents(inner, ticket, pr_ref)
+    action = resolve_for(inner, ticket, pr_ref, documents_read=(pr, findings))
+    open_findings = [
+        f
+        for f in (findings or {"findings": []})["findings"]
+        if f.get("status") == "open"
+    ]
     return {
         "key": ticket["key"],
         "repo": ticket.get("repo", ""),
@@ -128,7 +153,7 @@ def row(ctx: Context, ticket: dict) -> dict:
         "next": {"kind": action.kind, "target": action.target, "reason": action.reason},
         "open_findings": len(open_findings),
         "steps": _steps(inner, ticket),
-        "reviews": _reviews(inner, ticket, pr_ref),
+        "reviews": _reviews(inner, pr),
     }
 
 
