@@ -395,3 +395,39 @@ def test_an_active_pr_no_longer_registered_falls_back_to_the_newest():
 
 def test_a_ticket_with_no_prs_has_no_active_pr():
     assert active_pr({"prs": [], "active": "acme/api#114"}) is None
+
+
+# --- the view and the resolver read one vocabulary -------------------------
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [
+        {"dispatched": [{"review": "a"}], "collected": []},
+        {
+            "dispatched": [{"review": "a"}, {"review": "a"}],
+            "collected": [{"review": "a"}],
+        },
+        {"dispatched": [{"review": "a"}], "collected": [], "skipped": ["a"]},
+        {"dispatched": [{"review": "a"}], "collected": [{"review": "a"}]},
+        {"dispatched": [{"review": "a"}, {"review": "b"}], "collected": []},
+        {"dispatched": [{"review": "b"}, {"review": "a"}], "collected": []},
+        {},
+    ],
+)
+@pytest.mark.parametrize("review_id", ["a", "b"])
+def test_a_dispatched_review_is_exactly_one_the_resolver_would_collect(pr, review_id):
+    """`view.row` names a review `dispatched`; `next` says `collect`.
+
+    Two readings of one PR document, so they are asserted against each other
+    rather than trusted to stay in step (#28). Not an equality: `_uncollected`
+    answers for the whole document and returns the first review in dispatch
+    order, so a second dispatched review is `dispatched` here while
+    `_uncollected` is still naming the first.
+    """
+    from ticket.resolve import _uncollected, review_status
+
+    if review_status(pr, review_id) == "dispatched":
+        assert _uncollected(pr) is not None
+    if _uncollected(pr) == review_id:
+        assert review_status(pr, review_id) == "dispatched"

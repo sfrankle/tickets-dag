@@ -1063,3 +1063,15 @@ def test_next_answers_a_pr_flag_on_a_ticket_with_no_pr(env, fake_bin, capsys):
     main(["track", "ABC-123", "--repo", "acme/api"])
     assert main(["next", "ABC-123", "--pr", "115"]) == 1
     assert "has no PR yet" in capsys.readouterr().err
+
+
+def test_show_lists_every_review_with_its_status(env, fake_bin, capsys):
+    """#27's body: `show` and `show --json` read one dict, so the human half
+    names the reviews too instead of stopping at the steps."""
+    started(fake_bin)
+    main(["review", "ABC-123", "docs-tests"])
+    capsys.readouterr()
+
+    assert main(["show", "ABC-123"]) == 0
+    shown = capsys.readouterr().out
+    assert "docs-tests       dispatched" in shown

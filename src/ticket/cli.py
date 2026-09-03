@@ -19,20 +19,19 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
-from dataclasses import replace as replace_fields
 from pathlib import Path
 
 from . import collect as collect_module
 from . import fix as fix_module
-from . import gh
+from . import gh, view
 from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, RepoGuess, config_path, load_config
 from .effort import EFFORTS
 from .errors import GhError, StoreError, TicketError
-from .resolve import Action, active_pr, next_action, open_findings, orphan_steps
+from .resolve import Action, active_pr, open_findings, orphan_steps
 from .store import Store, now
+from .view import Context, load_ticket, resolve_for, scoped
 
 # A key is not just a label: it is a store filename, a lock filename, a log
 # directory and a worktree directory. The engine therefore checks only that it
@@ -73,85 +72,21 @@ WRITE_VERBS = {
 }
 
 
-@dataclass
-class Context:
-    cfg: Config
-    store: Store
-
-    @classmethod
-    def load(cls, repo: str | None = None, no_sync: bool = False) -> Context:
-        cfg = load_config()
-        if repo:
-            cfg = cfg.for_repo(repo)
-        if no_sync:
-            # `--no-sync` for the rare case of working offline; syncing is on by
-            # default because the bot commits on the remote.
-            cfg = replace_fields(cfg, sync=False)
-        return cls(cfg=cfg, store=Store(cfg.store))
-
-
-def load_ticket(ctx: Context, key: str) -> dict:
-    ticket = ctx.store.read_ticket(key)
-    if not ticket:
-        raise TicketError(
-            f"{key} is not tracked. Run: ticket track {key} --repo <owner/repo>"
-        )
-    return ticket
-
-
-def scoped(ctx: Context, ticket: dict) -> Context:
-    """Re-resolve the config against the ticket's repo."""
-    return Context(cfg=ctx.cfg.for_repo(ticket.get("repo", "")), store=ctx.store)
-
-
-def resolve_for(ctx: Context, ticket: dict, pr_ref: str | None = None) -> Action:
-    """What to do next, against one PR.
-
-    The caller may name the PR, because a `--pr` under `--dry-run` selects
-    nothing: resolving against the stored pointer there would answer a question
-    about a different PR than the one the command is about to act on.
-    """
-    pr_ref = pr_ref or active_pr(ticket)
-    # A missing PR document reads as an empty one: it is only written on the
-    # first dispatch, and the first review is due before that.
-    pr = (ctx.store.read_pr(pr_ref, ticket["key"]) or {}) if pr_ref else None
-    findings = ctx.store.read_findings(pr_ref, ticket["key"]) if pr_ref else None
-    return next_action(ctx.cfg, ticket, pr, findings)
-
-
 # --- output ---------------------------------------------------------------
 
 
-def _row(ctx: Context, ticket: dict) -> dict:
-    inner = scoped(ctx, ticket)
-    action = resolve_for(inner, ticket)
-    pr_ref = active_pr(ticket)
-    findings = (
-        inner.store.read_findings(pr_ref, ticket["key"]) if pr_ref else {"findings": []}
-    )
-    open_findings = [f for f in findings["findings"] if f.get("status") == "open"]
-    return {
-        "key": ticket["key"],
-        "repo": ticket.get("repo", ""),
-        "summary": ticket.get("summary", ""),
-        "pr": pr_ref,
-        "next": {"kind": action.kind, "target": action.target, "reason": action.reason},
-        "open_findings": len(open_findings),
-    }
-
-
 def print_queue(ctx: Context, as_json: bool) -> int:
-    rows = [_row(ctx, t) for t in ctx.store.list_tickets() if t.get("tracked")]
+    queue = view.rows(ctx)
     if as_json:
-        print(json.dumps(rows, indent=2))
+        print(json.dumps(queue, indent=2))
         return 0
-    if not rows:
+    if not queue:
         print(
             "No tracked tickets. Start one with: ticket track <KEY> --repo <owner/repo>"
         )
         return 0
-    width = max(len(r["key"]) for r in rows)
-    for row in rows:
+    width = max(len(r["key"]) for r in queue)
+    for row in queue:
         target = f" {row['next']['target']}" if row["next"]["target"] else ""
         findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
         print(f"{row['key']:<{width}}  {row['next']['kind']}{target}{findings}")
@@ -159,8 +94,8 @@ def print_queue(ctx: Context, as_json: bool) -> int:
 
 
 def print_row(ctx: Context, key: str, as_json: bool) -> int:
-    ticket = load_ticket(ctx, key)
-    row = _row(ctx, ticket)
+    """`show`. Both halves format one `view.row` dict, so they cannot disagree."""
+    row = view.row(ctx, load_ticket(ctx, key))
     if as_json:
         print(json.dumps(row, indent=2))
         return 0
@@ -168,13 +103,12 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     if row["pr"]:
         findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
         print(f"PR: {row['pr']}{findings}")
-    cfg = scoped(ctx, ticket).cfg
-    for step in cfg.steps:
-        record = (ticket.get("steps") or {}).get(step.id) or {}
-        # A recorded path can outlive its file; say so here rather than let whatever goes to read it fall over.
-        missing = "  (log missing)" if ctx.store.log_missing(record.get("log")) else ""
-        print(f"  {step.id:<16} {record.get('status', '-')}{missing}")
-    if any((ticket.get("steps") or {}).get(s.id, {}).get("log") for s in cfg.steps):
+    for step in row["steps"]:
+        missing = "  (log missing)" if step["log_missing"] else ""
+        print(f"  {step['id']:<16} {step['status'] or '-'}{missing}")
+    for review in row["reviews"]:
+        print(f"  {review['id']:<16} {review['status']}")
+    if any(step["log"] for step in row["steps"]):
         print(f"logs: ticket log {row['key']} <step>")
     print(
         f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"

@@ -80,6 +80,30 @@ def _collected_ids(pr: dict) -> set[str]:
     return {c["review"] for c in pr.get("collected") or [] if c.get("review")}
 
 
+def review_status(pr: dict, review_id: str) -> str:
+    """One review's state on one PR: `skipped`, `dispatched`, `collected` or `pending`.
+
+    Skipping is read first, so a review skipped after it was dispatched reads
+    as skipped here and as nothing at all to `_uncollected` — the two must
+    agree, or the view would name work `next` has already moved past.
+
+    `dispatched` is a count compare rather than "has it ever been collected":
+    a review re-dispatched on a new head is dispatched again, however many
+    results are already in.
+    """
+    if review_id in set(pr.get("skipped") or []):
+        return "skipped"
+    dispatched = sum(
+        1 for d in pr.get("dispatched") or [] if d.get("review") == review_id
+    )
+    collected = sum(
+        1 for c in pr.get("collected") or [] if c.get("review") == review_id
+    )
+    if dispatched > collected:
+        return "dispatched"
+    return "collected" if collected else "pending"
+
+
 def _uncollected(pr: dict) -> str | None:
     """A review can be re-dispatched once the head moves, so this counts rather
     than sets: the third dispatch of `docs-tests` is uncollected until a third
