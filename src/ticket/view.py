@@ -172,7 +172,7 @@ def _prs(
     return entries
 
 
-def _since(path: Path) -> str | None:
+def _lock_taken_at(path: Path) -> str | None:
     """When a lock was taken: its file's mtime, written once and never touched again.
 
     `None` when the file has gone, since the run holding it may release it between the status read and this one.
@@ -202,7 +202,7 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> dict
     return {
         "running": {
             "pid": status.pid,
-            "since": _since(path),
+            "since": _lock_taken_at(path),
             "log": logs.get(action.target) if action.kind == "step" else None,
         },
         "lock": "held",

@@ -65,6 +65,7 @@ def stamp(when: datetime) -> str:
 
 
 def now() -> str:
+    """The current moment, stamped."""
     return stamp(datetime.now(UTC))
 
 
