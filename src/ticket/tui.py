@@ -21,16 +21,15 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass, replace
 
-from .view import open_suffix
+from .view import RUNNABLE_ACTIONS, open_suffix
 
-# Panel geometry. The list grows with the terminal and never with the content
-# (#28), and below 90 columns the two panes stop sharing a line at all.
+# Panel geometry.
+# The list grows with the terminal and never with the content (#28), and below 90 columns the two panes stop sharing a line at all.
 PANEL_FRACTION = 0.32
 PANEL_MIN = 24
 PANEL_MAX = 44
 NARROW_WIDTH = 90
-# Under 20 rows the log pane does not auto-open; there is not enough screen for
-# the pipeline and a tail at once.
+# Under 20 rows the log pane does not auto-open; there is not enough screen for the pipeline and a tail at once.
 SHORT_HEIGHT = 20
 FOOTER_LINES = 2
 
@@ -41,8 +40,8 @@ BACKSPACE = frozenset({"\x7f", "\b", "BACKSPACE", "KEY_BACKSPACE"})
 DOWN = frozenset({"j", "DOWN", "KEY_DOWN"})
 UP = frozenset({"k", "UP", "KEY_UP"})
 
-# Marker per stored status. `running` is derived rather than stored, and an
-# absent record is a step that has not run — neither is a new status word.
+# Marker per stored status.
+# `running` is derived rather than stored, and an absent record is a step that has not run — neither is a new status word.
 MARKERS = {
     "done": "x",
     "released": "x",
@@ -82,6 +81,7 @@ class State:
 
     `mode` is where typed characters go: `list` for the key map, `search` for the `/` buffer, `track` for the key `t` is collecting.
     `log_lines` is what the adapter has tailed so far — screen state like the rest, since only the adapter reads files.
+    `log_shown` is whether the last paint drew a log pane, which is `log_pane_open` and needs the terminal's width and height; the reducer has neither, so it arrives from the adapter the way `viewport` does.
     """
 
     cursor: int = 0
@@ -97,6 +97,7 @@ class State:
     log_collapsed: bool = False
     log_lines: tuple[str, ...] = ()
     log_offset: int = 0
+    log_shown: bool = False
     inspecting: int = 0
     help_open: bool = False
     quitting: bool = False
@@ -171,26 +172,41 @@ def _contextual(row: dict | None) -> Contextual:
     action = row["next"]
     target = action["target"] or ""
     if row.get("running"):
-        # The engine would refuse the second run anyway; disabling ENTER here
-        # keeps the common case away from that error (#28, run model).
+        # The engine would refuse the second run anyway; disabling ENTER here keeps the common case away from that error (#28, run model).
         return Contextual(f"running {target}  ·  ENTER disabled".rstrip(), None)
     kind = action["kind"]
     if kind == "gate":
         return Contextual(f"ticket release {key} {target}", None)
-    if kind == "step":
-        return Contextual(f"ENTER run {target}", ["run", key, target])
-    if kind == "review":
-        return Contextual(f"ENTER dispatch {target}", ["review", key, target])
-    if kind == "collect":
-        return Contextual("ENTER collect", ["collect", key])
-    if kind == "fix":
-        return Contextual(f"ENTER fix {target}", ["fix", key, target])
-    return Contextual("nothing to run", None)
+    owner = RUNNABLE_ACTIONS.get(kind)
+    if owner is None:
+        # `rest`, and anything the engine grows that no verb owns yet.
+        return Contextual("nothing to run", None)
+    verb, word, names_target = owner
+    argv = [verb, key, target] if names_target and target else [verb, key]
+    return Contextual(f"ENTER {word} {target if names_target else ''}".rstrip(), argv)
+
+
+def _log_scrollable(state: State) -> bool:
+    """Whether there is a log pane on screen with a tail in it."""
+    return bool(state.log_lines) and state.log_shown
+
+
+def log_has_focus(state: State) -> bool:
+    """Whether `j`/`k` scroll the log rather than moving the cursor in the list.
+
+    Focus is checked against what the last paint drew rather than trusted, so a resize that takes the log pane away — a narrow terminal, a short one, or `L` — cannot leave `j`/`k` scrolling something the user cannot see.
+    """
+    return state.focus == "log" and _log_scrollable(state)
 
 
 def panel_width(width: int) -> int:
     """Columns the list panel occupies, borders included."""
     return min(max(int(width * PANEL_FRACTION), PANEL_MIN), PANEL_MAX)
+
+
+def detail_width(width: int) -> int:
+    """Columns the detail pane occupies, which is whatever the list panel and the three borders leave."""
+    return width - panel_width(width) - 1
 
 
 def list_capacity(height: int) -> int:
@@ -256,8 +272,7 @@ def _typed(state: State, rows: list[dict], key: str) -> tuple[State, list[list[s
     buffer = "search" if state.mode == "search" else "entry"
     text = getattr(state, buffer)
     if key in ESCAPE:
-        # Cancelling a search restores the full list, so the cursor is re-seated
-        # the same way toggling the filter is.
+        # Cancelling a search restores the full list, so the cursor is re-seated the same way toggling the filter is.
         cleared = replace(state, mode="list", **{buffer: ""})
         return _clamp_cursor(cleared, rows), []
     if key in ENTER:
@@ -292,16 +307,10 @@ def handle_key(
         return state, [command] if command else []
     if key in TAB:
         # Two jobs, because the reducer has no width and cannot tell which layout is on screen: `narrow_pane` is what the one-pane path reads and is inert in the two-pane one, while `focus` decides whether `j`/`k` move the cursor or scroll the log.
-        # The log can only take focus when there is a tail to scroll, which is the adapter's answer, arriving as `log_lines`.
+        # The log can only take focus when the last paint drew one with a tail in it, which is the adapter's answer arriving as `log_shown` and `log_lines`.
         pane = "detail" if state.narrow_pane == "list" else "list"
-        scrollable = bool(state.log_lines) and not state.log_collapsed
-        if state.focus == "log":
-            focus = "list"
-        elif scrollable:
-            focus = "log"
-        else:
-            focus = "detail" if pane == "detail" else "list"
-        return replace(state, narrow_pane=pane, focus=focus), []
+        take_log = _log_scrollable(state) and not log_has_focus(state)
+        return replace(state, narrow_pane=pane, focus="log" if take_log else "list"), []
     if key in ESCAPE:
         return replace(state, narrow_pane="list", focus="list", help_open=False), []
     if key == "/":
@@ -318,7 +327,7 @@ def handle_key(
         return state, [["refresh"]]
     if key in DOWN or key in UP:
         step = 1 if key in DOWN else -1
-        if state.focus == "log":
+        if log_has_focus(state):
             highest = max(len(state.log_lines) - 1, 0)
             offset = min(max(state.log_offset + step, 0), highest)
             return replace(state, log_offset=offset), []
@@ -361,9 +370,7 @@ def _title(text: str, width: int) -> str:
 def _list_lines(
     state: State, shown: list[dict], width: int, offset: int, capacity: int
 ) -> list[str]:
-    # The key column is sized to the longest *visible* key, so the summaries
-    # stay aligned while scrolling without reserving room for a key the filter
-    # has taken away.
+    # The key column is sized to the longest *visible* key, so the summaries stay aligned while scrolling without reserving room for a key the filter has taken away.
     keys = max((len(row["key"]) for row in shown), default=0)
     lines = []
     for index in range(offset, min(len(shown), offset + capacity)):
@@ -413,8 +420,7 @@ def _detail_lines(state: State, row: dict | None, width: int) -> list[str]:
         findings = f"    {count} open findings" if count else ""
         lines.append(f"PR: {inspected['ref']}{findings}"[:width])
     if len(prs) > 1:
-        # `next` only ever drives the active PR, so an older one's open findings
-        # are invisible unless they are listed here (#28, multiple PRs).
+        # `next` only ever drives the active PR, so an older one's open findings are invisible unless they are listed here (#28, multiple PRs).
         for pr in prs:
             active = "*" if pr["active"] else " "
             cursor = ">" if pr is inspected else " "
@@ -444,8 +450,13 @@ def _header(row: dict | None) -> str:
     return f"{row['key']}  {row.get('repo', '')}".rstrip()
 
 
-def _log_open(state: State, row: dict | None, height: int) -> bool:
-    if state.log_collapsed or height < SHORT_HEIGHT:
+def log_pane_open(state: State, row: dict | None, width: int, height: int) -> bool:
+    """Whether a paint at this size draws a log pane at all.
+
+    Exported for the adapter, which puts the answer in `log_shown` the way it puts `list_capacity` in `viewport`.
+    The narrow layout shows one pane at a time and never a log, so `Tab` must not hand focus to one there.
+    """
+    if width < NARROW_WIDTH or state.log_collapsed or height < SHORT_HEIGHT:
         return False
     return _log_path(row) is not None
 
@@ -486,9 +497,9 @@ def _frame(
     height: int,
 ) -> list[str]:
     """Two panes side by side, with the log pane cut into the right one."""
-    panel = min(panel_width(width), max(width - 20, PANEL_MIN))
+    panel = panel_width(width)
     left_w = panel - 2
-    right_w = width - panel - 1
+    right_w = detail_width(width)
     body = max(height - 2, 0)
     lines = [f"+{_title(left_title, left_w)}+{_title(right_title, right_w)}+"]
     log_h = len(log) + 1 if log_title is not None else 0
@@ -535,8 +546,7 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
         return _one_pane(HELP, "help", width, body) + footer
 
     if width < NARROW_WIDTH:
-        # A different path rather than the same one with smaller numbers: one
-        # pane at a time is a different screen, and `Tab` is what swaps them.
+        # A different path rather than the same one with smaller numbers: one pane at a time is a different screen, and `Tab` is what swaps them.
         inner = width - 2
         if state.narrow_pane == "list":
             lines = _list_lines(state, shown, inner, offset, capacity)
@@ -546,13 +556,12 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
             title = _header(row)
         return _one_pane(lines, title, width, body) + footer
 
-    panel = min(panel_width(width), max(width - 20, PANEL_MIN))
-    left = _list_lines(state, shown, panel - 2, offset, capacity)
-    right_w = width - panel - 1
+    left = _list_lines(state, shown, panel_width(width) - 2, offset, capacity)
+    right_w = detail_width(width)
     detail = _detail_lines(state, row, right_w)
     log_title = None
     log: list[str] = []
-    if _log_open(state, row, height):
+    if log_pane_open(state, row, width, height):
         path = _log_path(row)
         log_title = f"log  {path.rsplit('/', 1)[-1]}" if path else "log"
         log = _log_lines(state, right_w, max((body - 2) // 3, 1))

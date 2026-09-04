@@ -314,7 +314,7 @@ def test_j_and_k_move_the_cursor_and_carry_the_viewport():
 def test_tab_hands_focus_to_the_log_and_takes_it_back():
     """Focus has to be reachable: `j` scrolling the log is dead code if no key sets it."""
     rows = [make_row("ABC-123")]
-    state, _ = handle_key(State(log_lines=("a", "b")), rows, "\t")
+    state, _ = handle_key(State(log_lines=("a", "b"), log_shown=True), rows, "\t")
     assert state.focus == "log"
     assert handle_key(state, rows, "\t")[0].focus == "list"
 
@@ -322,13 +322,32 @@ def test_tab_hands_focus_to_the_log_and_takes_it_back():
 def test_tab_leaves_the_log_alone_when_there_is_nothing_to_scroll():
     rows = [make_row("ABC-123")]
     assert handle_key(State(), rows, "\t")[0].focus != "log"
-    collapsed = State(log_lines=("a",), log_collapsed=True)
-    assert handle_key(collapsed, rows, "\t")[0].focus != "log"
+    unpainted = State(log_lines=("a",), log_shown=False)
+    assert handle_key(unpainted, rows, "\t")[0].focus != "log"
+
+
+def test_the_log_cannot_take_focus_where_the_paint_has_no_log_pane():
+    """`Tab` under 90 columns used to focus a pane the narrow layout never draws, leaving `j`/`k` scrolling offscreen text."""
+    rows = [make_row("ABC-123")]
+    narrow = State(log_lines=("a", "b"), log_shown=False)
+    state, _ = handle_key(narrow, rows, "\t")
+    assert state.focus == "list"
+    assert state.narrow_pane == "detail"
+    assert handle_key(state, rows, "j")[0].log_offset == 0
 
 
 def test_j_scrolls_the_log_when_the_log_has_focus():
-    state = State(focus="log", log_lines=("a", "b", "c"))
+    state = State(focus="log", log_lines=("a", "b", "c"), log_shown=True)
     assert handle_key(state, [make_row("ABC-1")], "j")[0].log_offset == 1
+
+
+def test_a_resize_that_drops_the_log_pane_gives_j_back_to_the_list():
+    """Focus outlives the paint that earned it, so `j` asks what is on screen rather than trusting it."""
+    rows = [make_row("ABC-1"), make_row("ABC-2")]
+    stranded = State(focus="log", log_lines=("a", "b", "c"), log_shown=False)
+    state, _ = handle_key(stranded, rows, "j")
+    assert state.log_offset == 0
+    assert state.cursor == 1
 
 
 def test_toggles_emit_nothing():

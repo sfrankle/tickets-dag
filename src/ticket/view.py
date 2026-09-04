@@ -118,6 +118,19 @@ def _steps(ctx: Context, ticket: dict) -> list[dict]:
     return entries
 
 
+RUNNABLE_ACTIONS = {
+    "step": ("run", "run", True),
+    "review": ("review", "dispatch", True),
+    "collect": ("collect", "collect", False),
+    "fix": ("fix", "fix", True),
+}
+"""The verb that owns each runnable action kind, with the word the TUI uses for it and whether the verb names the target.
+
+`gate` and `rest` are absent on purpose: they are the two answers no verb owns.
+A seventh kind is a line here, so a frontend cannot quietly decide it has nothing to run.
+"""
+
+
 def open_suffix(count: int) -> str:
     """How an open-findings count is written wherever one is printed.
 
