@@ -118,6 +118,15 @@ def _steps(ctx: Context, ticket: dict) -> list[dict]:
     return entries
 
 
+def open_suffix(count: int) -> str:
+    """How an open-findings count is written wherever one is printed.
+
+    This module already decides what counts as open; this is the other half of that — the rule for how it reads.
+    Both frontends share it so the CLI and the TUI cannot end up wording one count two ways.
+    """
+    return f"  {count} open" if count else ""
+
+
 def _reviews(ctx: Context, pr: dict | None) -> list[dict]:
     """One entry per declared review, in `order`, empty until there is a PR.
 

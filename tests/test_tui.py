@@ -156,7 +156,7 @@ def test_a_row_with_no_summary_falls_back_to_the_repo_then_the_key():
 def test_the_list_is_a_viewport_under_the_cursor():
     """#26's bug: the rendered lines were sliced to the terminal height, so past row 20 the selection could not be reached."""
     rows = [make_row(f"ABC-{n:03d}") for n in range(40)]
-    state = State(cursor=37, viewport=tui.list_capacity(80, 24))
+    state = State(cursor=37, viewport=tui.list_capacity(24))
     screen = "\n".join(render(state, rows, 80, 24))
     assert ">ABC-037" in screen
     assert "ABC-000" not in screen

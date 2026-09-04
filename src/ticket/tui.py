@@ -4,7 +4,8 @@ Nothing here writes to the store, spawns a process or touches a terminal.
 `handle_key` returns argv lists and the caller runs them, so the one writer stays the `ticket` CLI and its lock (#28, "the TUI is a frontend").
 The curses adapter is #37 and is deliberately too small to hold a bug.
 
-Rows are `view.row` dicts passed in, never held: a repaint after the poll is a new call with fresh rows rather than a mutation, and this module needs no engine import at all to read them.
+Rows are `view.row` dicts passed in, never held: a repaint after the poll is a new call with fresh rows rather than a mutation, and nothing here reads a row through the engine.
+`view.open_suffix` is the one import, and it is a formatting rule rather than a reader: the count a row already carries has to read the same way in both frontends.
 
 Two rules from #28 that this file exists to keep:
 
@@ -19,6 +20,8 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass, replace
+
+from .view import open_suffix
 
 # Panel geometry. The list grows with the terminal and never with the content
 # (#28), and below 90 columns the two panes stop sharing a line at all.
@@ -137,11 +140,17 @@ def visible_rows(state: State, rows: list[dict]) -> list[dict]:
     return shown
 
 
+def _clamp(index: int, total: int) -> int:
+    """An index seated inside a list of `total` rows, and 0 when there are none."""
+    return min(max(index, 0), max(total - 1, 0))
+
+
+def _row_at(shown: list[dict], cursor: int) -> dict | None:
+    return shown[_clamp(cursor, len(shown))] if shown else None
+
+
 def selected(state: State, rows: list[dict]) -> dict | None:
-    shown = visible_rows(state, rows)
-    if not shown:
-        return None
-    return shown[min(max(state.cursor, 0), len(shown) - 1)]
+    return _row_at(visible_rows(state, rows), state.cursor)
 
 
 def contextual(state: State, rows: list[dict]) -> Contextual:
@@ -152,7 +161,10 @@ def contextual(state: State, rows: list[dict]) -> Contextual:
     A gate names the literal command to copy and returns no argv.
     Releasing a gate from the TUI is out of scope for v1, so this is the whole of what the TUI has to say about one.
     """
-    row = selected(state, rows)
+    return _contextual(selected(state, rows))
+
+
+def _contextual(row: dict | None) -> Contextual:
     if row is None:
         return Contextual("no tickets", None)
     key = row["key"]
@@ -181,10 +193,10 @@ def panel_width(width: int) -> int:
     return min(max(int(width * PANEL_FRACTION), PANEL_MIN), PANEL_MAX)
 
 
-def list_capacity(width: int, height: int) -> int:
+def list_capacity(height: int) -> int:
     """Rows the list shows, which is the same number the reducer scrolls by.
 
-    Exported so the adapter can put it in `viewport` and the reducer and the paint cannot disagree about how far a page is.
+    Exported so the adapter can put it in `viewport`, and called by `render` so the reducer, the paint and the adapter cannot disagree about how far a page is.
     """
     return max(height - FOOTER_LINES - 2, 0)
 
@@ -233,7 +245,7 @@ def _log_path(row: dict | None) -> str | None:
 def _clamp_cursor(state: State, rows: list[dict]) -> State:
     """Re-seat the cursor after anything that changes what is visible."""
     total = len(visible_rows(state, rows))
-    cursor = min(max(state.cursor, 0), max(total - 1, 0))
+    cursor = _clamp(state.cursor, total)
     capacity = state.viewport or total
     offset = _clamp_offset(state.offset, cursor, capacity, total)
     return replace(state, cursor=cursor, offset=offset, inspecting=0)
@@ -269,9 +281,7 @@ def handle_key(
     if state.mode != "list":
         return _typed(state, rows, key)
 
-    shown = visible_rows(state, rows)
     row = selected(state, rows)
-    capacity = state.viewport or len(shown)
 
     if key == "q":
         return replace(state, quitting=True), []
@@ -312,9 +322,7 @@ def handle_key(
             highest = max(len(state.log_lines) - 1, 0)
             offset = min(max(state.log_offset + step, 0), highest)
             return replace(state, log_offset=offset), []
-        cursor = min(max(state.cursor + step, 0), max(len(shown) - 1, 0))
-        offset = _clamp_offset(state.offset, cursor, capacity, len(shown))
-        return replace(state, cursor=cursor, offset=offset, inspecting=0), []
+        return _clamp_cursor(replace(state, cursor=state.cursor + step), rows), []
 
     if row is None:
         return state, []
@@ -350,13 +358,15 @@ def _title(text: str, width: int) -> str:
     return f"- {text} ".ljust(width, "-")[:width]
 
 
-def _list_lines(state: State, shown: list[dict], width: int, offset: int) -> list[str]:
+def _list_lines(
+    state: State, shown: list[dict], width: int, offset: int, capacity: int
+) -> list[str]:
     # The key column is sized to the longest *visible* key, so the summaries
     # stay aligned while scrolling without reserving room for a key the filter
     # has taken away.
     keys = max((len(row["key"]) for row in shown), default=0)
     lines = []
-    for index in range(offset, len(shown)):
+    for index in range(offset, min(len(shown), offset + capacity)):
         row = shown[index]
         marker = ">" if index == state.cursor else " "
         if state.keys_only:
@@ -408,8 +418,8 @@ def _detail_lines(state: State, row: dict | None, width: int) -> list[str]:
         for pr in prs:
             active = "*" if pr["active"] else " "
             cursor = ">" if pr is inspected else " "
-            count = f"  {pr['open_findings']} open" if pr["open_findings"] else ""
-            lines.append(f" {cursor}{active} {pr['ref']}{count}"[:width])
+            suffix = open_suffix(pr["open_findings"])
+            lines.append(f" {cursor}{active} {pr['ref']}{suffix}"[:width])
     lines.append("")
     lines += _pipeline_lines(row, width)
     lines.append("")
@@ -440,17 +450,17 @@ def _log_open(state: State, row: dict | None, height: int) -> bool:
     return _log_path(row) is not None
 
 
-def _footer(state: State, rows: list[dict], width: int) -> list[str]:
-    line = contextual(state, rows)
-    row = selected(state, rows)
-    parts = [line.label]
+def _footer(
+    state: State, shown: list[dict], row: dict | None, total: int, width: int
+) -> list[str]:
+    """The two footer lines. `render` has the visible rows and the selection already, so the footer is given them rather than filtering the queue three more times to find them again."""
+    parts = [_contextual(row).label]
     if row:
         if row.get("open_findings"):
             parts.append(f"f {row['open_findings']} findings")
         if row.get("pr"):
             parts.append(f"o PR {row['pr']}")
-    shown = len(visible_rows(state, rows))
-    status = [f"{shown}/{len(rows)} tickets"]
+    status = [f"{len(shown)}/{total} tickets"]
     if state.filtered:
         status.append("b attention only")
     if state.mode == "search" or state.search:
@@ -513,30 +523,31 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
     Nothing scrolls horizontally: every cell is truncated to the space it has, so a long summary is short here and whole in the detail pane.
     """
     shown = visible_rows(state, rows)
-    cursor = min(max(state.cursor, 0), max(len(shown) - 1, 0))
+    cursor = _clamp(state.cursor, len(shown))
     state = replace(state, cursor=cursor)
-    row = selected(state, rows)
+    row = _row_at(shown, cursor)
     body = max(height - FOOTER_LINES, 0)
-    capacity = max(body - 2, 0)
+    capacity = list_capacity(height)
     offset = _clamp_offset(state.offset, cursor, capacity, len(shown))
+    footer = _footer(state, shown, row, len(rows), width)
 
     if state.help_open:
-        return _one_pane(HELP, "help", width, body) + _footer(state, rows, width)
+        return _one_pane(HELP, "help", width, body) + footer
 
     if width < NARROW_WIDTH:
         # A different path rather than the same one with smaller numbers: one
         # pane at a time is a different screen, and `Tab` is what swaps them.
         inner = width - 2
         if state.narrow_pane == "list":
-            lines = _list_lines(state, shown, inner, offset)
+            lines = _list_lines(state, shown, inner, offset, capacity)
             title = "tickets"
         else:
             lines = _detail_lines(state, row, inner)
             title = _header(row)
-        return _one_pane(lines, title, width, body) + _footer(state, rows, width)
+        return _one_pane(lines, title, width, body) + footer
 
     panel = min(panel_width(width), max(width - 20, PANEL_MIN))
-    left = _list_lines(state, shown, panel - 2, offset)
+    left = _list_lines(state, shown, panel - 2, offset, capacity)
     right_w = width - panel - 1
     detail = _detail_lines(state, row, right_w)
     log_title = None
@@ -546,4 +557,4 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
         log_title = f"log  {path.rsplit('/', 1)[-1]}" if path else "log"
         log = _log_lines(state, right_w, max((body - 2) // 3, 1))
     frame = _frame(left, detail, "tickets", _header(row), log_title, log, width, body)
-    return frame + _footer(state, rows, width)
+    return frame + footer

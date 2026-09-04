@@ -75,14 +75,6 @@ WRITE_VERBS = {
 # --- output ---------------------------------------------------------------
 
 
-def _open_suffix(count: int) -> str:
-    """How an open-findings count is written wherever one is printed.
-
-    `view` already decides what counts as open; this is the other half of that — the rule for how it reads.
-    """
-    return f"  {count} open" if count else ""
-
-
 def print_queue(ctx: Context, as_json: bool) -> int:
     queue = view.rows(ctx)
     if as_json:
@@ -96,7 +88,7 @@ def print_queue(ctx: Context, as_json: bool) -> int:
     width = max(len(r["key"]) for r in queue)
     for row in queue:
         target = f" {row['next']['target']}" if row["next"]["target"] else ""
-        findings = _open_suffix(row["open_findings"])
+        findings = view.open_suffix(row["open_findings"])
         print(f"{row['key']:<{width}}  {row['next']['kind']}{target}{findings}")
     return 0
 
@@ -109,13 +101,13 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
         return 0
     print(f"{row['key']}  {row['repo']}  {row['summary']}".rstrip())
     if row["pr"]:
-        findings = _open_suffix(row["open_findings"])
+        findings = view.open_suffix(row["open_findings"])
         print(f"PR: {row['pr']}{findings}")
     if len(row["prs"]) > 1:
         # The `PR:` line names the active one, and that is the only PR `next` ever drives; an older PR's open findings are otherwise invisible.
         for pr in row["prs"]:
             marker = "*" if pr["active"] else " "
-            print(f"  {marker} {pr['ref']}{_open_suffix(pr['open_findings'])}")
+            print(f"  {marker} {pr['ref']}{view.open_suffix(pr['open_findings'])}")
     for step in row["steps"]:
         missing = "  (log missing)" if step["log_missing"] else ""
         print(f"  {step['id']:<16} {step['status'] or '-'}{missing}")
