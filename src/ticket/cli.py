@@ -4,7 +4,7 @@ Fixed verbs. The verb set does not grow when the config does: adding a step to
 YAML changes what `next` does and what `run` accepts, and adds nothing here.
 
 Two families of verb, and `--help` says which is which (issue #12).
-Management verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config` — are the engine's own and mean the same thing under every config.
+Management verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config`, `tui` — are the engine's own and mean the same thing under every config.
 Stage verbs — `run`, `skip`, `release`, `review`, `collect`, `fix`, ... — are also the engine's, but every name they take as an argument comes from config, and `ticket stages --list` is where those names are read.
 
 A stage exists because config declares it, not because the store has a row for it: the store only records what has happened to a stage.
@@ -1084,6 +1084,17 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_tui(args) -> int:
+    """The queue as a screen that stays put and stays current (#28).
+
+    Imported here rather than at the top because `curses` is the one dependency a single verb has.
+    Every other verb should keep working on a terminal that cannot give one.
+    """
+    from . import tui_curses
+
+    return tui_curses.run()
+
+
 def cmd_log(args) -> int:
     """A step's recorded log, or a sentence saying why there is not one."""
     ctx = Context.load(no_sync=True)
@@ -1302,6 +1313,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("log", cmd_log, help="what a step's last run wrote")
     p.add_argument("key")
     p.add_argument("step")
+
+    add("tui", cmd_tui, help="the queue as a screen that stays put")
 
     p = add("stages", cmd_stages, help="the steps and reviews config declares")
     p.add_argument(

@@ -259,7 +259,7 @@ def _inspected(state: State, row: dict) -> dict | None:
     return prs[(active + state.inspecting) % len(prs)]
 
 
-def _log_path(row: dict | None) -> str | None:
+def log_path(row: dict | None) -> str | None:
     """The log the pane tails: the running step's, else the last one recorded."""
     if row is None:
         return None
@@ -473,7 +473,7 @@ def log_pane_open(state: State, row: dict | None, width: int, height: int) -> bo
     """
     if width < NARROW_WIDTH or state.log_collapsed or height < SHORT_HEIGHT:
         return False
-    return _log_path(row) is not None
+    return log_path(row) is not None
 
 
 def _footer(
@@ -579,7 +579,7 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
     log_title = None
     log: list[str] = []
     if log_pane_open(state, row, width, height):
-        path = _log_path(row)
+        path = log_path(row)
         log_title = f"log  {path.rsplit('/', 1)[-1]}" if path else "log"
         log = _log_lines(state, right_w, max((body - 2) // 3, 1))
     frame = _frame(left, detail, "tickets", _header(row), log_title, log, width, body)
