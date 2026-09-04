@@ -11,7 +11,10 @@ import ast
 from pathlib import Path
 
 from ticket import tui
-from ticket.tui import State, contextual, handle_key, render
+from ticket.tui import HELP_ENTRIES, State, contextual, handle_key, render
+
+# `Tab` and `ENTER` are named in the help pane and typed as control characters.
+AS_TYPED = {"ENTER": "\n", "Tab": "\t"}
 
 TUI_SOURCE = Path(tui.__file__)
 
@@ -384,8 +387,41 @@ def test_q_asks_to_quit_rather_than_emitting_a_command():
 
 def test_no_key_emits_anything_on_an_empty_queue():
     """`R` is the exception and is left out: refresh takes no key and refreshes every tracked row."""
-    for key in "\n otpwTab/bLjk?":
-        assert handle_key(State(), [], key)[1] == []
+    for name, _ in HELP_ENTRIES:
+        if name == "R":
+            continue
+        assert handle_key(State(), [], AS_TYPED.get(name, name))[1] == []
+
+
+def test_the_help_pane_and_the_reducer_name_the_same_keys():
+    """The pane is a second copy of the key map, so it is checked rather than trusted.
+
+    A key that documents itself and then does nothing is worse than an undocumented one: #28 makes the screen's account of what a key does the thing the user relies on.
+    """
+    # Every row is rich enough that no key is inert for want of a PR or a
+    # second one to cycle to: this test is about the reducer, not the queue.
+    rows = []
+    for key, number in (("ABC-123", 115), ("ABC-456", 121), ("ABC-789", 130)):
+        row = make_row(key, pr=f"acme/api#{number}", open_findings=2)
+        row["prs"] = [
+            {"ref": f"acme/api#{number}", "active": True, "open_findings": 2},
+            {"ref": f"acme/api#{number - 1}", "active": False, "open_findings": 0},
+        ]
+        rows.append(row)
+    # Seated in the middle, so `j` and `k` both have somewhere to go: a cursor
+    # clamping at an end is the reducer working, not a dead key.
+    start = State(cursor=1)
+    for name, _ in HELP_ENTRIES:
+        state, commands = handle_key(start, rows, AS_TYPED.get(name, name))
+        assert commands or state != start, f"{name} is documented and inert"
+
+
+def test_the_status_line_carries_the_sync_age_the_adapter_words():
+    """#28's status line. The age needs a clock, which this layer does not have."""
+    rows = [make_row("ABC-123")]
+    assert "last sync" not in "".join(render(State(), rows, 100, 24))
+    screen = "".join(render(State(synced="4m ago"), rows, 100, 24))
+    assert "last sync 4m ago" in screen
 
 
 # --- guard ------------------------------------------------------------------

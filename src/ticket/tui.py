@@ -54,17 +54,30 @@ MARKERS = {
     None: " ",
 }
 
-HELP = [
-    "ENTER  run whatever the resolver says is next",
-    "o      open the PR        t  track a new key",
-    "f      findings           R  refresh (network)",
-    "p      cycle the inspected PR",
-    "w      collapse the list to keys only",
-    "Tab    focus              /  search",
-    "b      only what wants attention",
-    "L      collapse the log   j k  move",
-    "?      this help          q  quit",
-]
+HELP_ENTRIES = (
+    ("ENTER", "run whatever the resolver says is next"),
+    ("o", "open the PR"),
+    ("t", "track a new key"),
+    ("f", "findings"),
+    ("R", "refresh (network)"),
+    ("p", "cycle the inspected PR"),
+    ("w", "collapse the list to keys only"),
+    ("Tab", "focus, and the pane below 90 columns"),
+    ("/", "search"),
+    ("b", "only what wants attention"),
+    ("L", "collapse the log"),
+    ("j", "move down"),
+    ("k", "move up"),
+    ("?", "this help"),
+    ("q", "quit"),
+)
+"""#28's key map, as the one copy of it.
+
+`handle_key` is a cascade rather than a table, so reading it from here would be theatre; the guard test compares the two instead.
+A key this names and the reducer ignores — or the other way round — then fails a test rather than misleading someone mid-run.
+"""
+
+HELP = [f"{key:<6} {what}" for key, what in HELP_ENTRIES]
 
 
 @dataclass(frozen=True)
@@ -81,6 +94,7 @@ class State:
 
     `mode` is where typed characters go: `list` for the key map, `search` for the `/` buffer, `track` for the key `t` is collecting.
     `log_lines` is what the adapter has tailed so far — screen state like the rest, since only the adapter reads files.
+    `synced` is how long ago the store was last refreshed, already written for the eye: the age needs a clock and this layer has none, so the adapter words it (#28's status line).
     `log_shown` is whether the last paint drew a log pane, which is `log_pane_open` and needs the terminal's width and height; the reducer has neither, so it arrives from the adapter the way `viewport` does.
     """
 
@@ -98,6 +112,7 @@ class State:
     log_lines: tuple[str, ...] = ()
     log_offset: int = 0
     log_shown: bool = False
+    synced: str = ""
     inspecting: int = 0
     help_open: bool = False
     quitting: bool = False
@@ -478,6 +493,8 @@ def _footer(
         status.append(f"/ {state.search}")
     if state.mode == "track":
         status.append(f"track {state.entry}")
+    if state.synced:
+        status.append(f"last sync {state.synced}")
     status.append("? help")
     status.append("q quit")
     return [
