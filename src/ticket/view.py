@@ -118,6 +118,28 @@ def _steps(ctx: Context, ticket: dict) -> list[dict]:
     return entries
 
 
+RUNNABLE_ACTIONS = {
+    "step": ("run", "run", True),
+    "review": ("review", "dispatch", True),
+    "collect": ("collect", "collect", False),
+    "fix": ("fix", "fix", True),
+}
+"""The verb that owns each runnable action kind, with the word the TUI uses for it and whether the verb names the target.
+
+`gate` and `rest` are absent on purpose: they are the two answers no verb owns.
+A seventh kind is a line here, so a frontend cannot quietly decide it has nothing to run.
+"""
+
+
+def open_suffix(count: int) -> str:
+    """How an open-findings count is written wherever one is printed.
+
+    This module already decides what counts as open; this is the other half of that — the rule for how it reads.
+    Both frontends share it so the CLI and the TUI cannot end up wording one count two ways.
+    """
+    return f"  {count} open" if count else ""
+
+
 def _reviews(ctx: Context, pr: dict | None) -> list[dict]:
     """One entry per declared review, in `order`, empty until there is a PR.
 
