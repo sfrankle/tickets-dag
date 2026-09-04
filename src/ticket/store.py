@@ -56,9 +56,16 @@ def legacy_pr_slug(pr_ref: str) -> str:
     return f"{repo.replace('/', '-')}_{number}"
 
 
+def stamp(when: datetime) -> str:
+    """UTC timestamp in the form the store records everywhere.
+
+    Takes the moment rather than reading the clock, so a time that came off the filesystem — a lock file's mtime, say — is written the same way as one the store minted itself.
+    """
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def now() -> str:
-    """UTC timestamp in the form the store records everywhere."""
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return stamp(datetime.now(UTC))
 
 
 def _relative(root: Path, path: Path) -> str:
