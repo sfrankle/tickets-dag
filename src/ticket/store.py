@@ -120,20 +120,34 @@ class Store:
 
     # --- logs ----------------------------------------------------------
 
+    def _fresh_log(self, key: str, stem: str, suffix: str) -> Path:
+        """A file under the ticket's own `logs/` that nothing is already using.
+
+        The stamp and the collision walk live here rather than at each caller, so the #27 layout is changed in one place.
+        """
+        directory = self.ticket_dir(key) / "logs"
+        directory.mkdir(parents=True, exist_ok=True)
+        started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = directory / f"{stem}-{started}{suffix}"
+        attempt = 1
+        while path.exists():
+            attempt += 1
+            path = directory / f"{stem}-{started}-{attempt}{suffix}"
+        return path
+
     def log_path(self, key: str, step: str) -> Path:
         """A fresh file for this run, under the ticket's own `logs/`.
 
         One file per run, not per day: a step that is re-run after a failure must not append to the log of the run that failed.
         """
-        directory = self.ticket_dir(key) / "logs"
-        directory.mkdir(parents=True, exist_ok=True)
-        started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = directory / f"{step}-{started}.log"
-        attempt = 1
-        while path.exists():
-            attempt += 1
-            path = directory / f"{step}-{started}-{attempt}.log"
-        return path
+        return self._fresh_log(key, step, ".log")
+
+    def spawn_err_path(self, key: str) -> Path:
+        """Where a spawned run's stdout and stderr go, beside that ticket's logs.
+
+        The TUI spawns `ticket` as a detached child (#37), and this file is the only place an immediate crash can announce itself: the child dies before the engine has written anything, so without it the row simply never starts and says nothing about why.
+        """
+        return self._fresh_log(key, "spawn", ".err")
 
     def relative(self, path: Path) -> str:
         """How a path is recorded in state: relative to the store root.

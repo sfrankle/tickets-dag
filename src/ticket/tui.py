@@ -1,7 +1,7 @@
 """The TUI's pure layer: screen state, `render`, and the key reducer (#28, #36).
 
 Nothing here writes to the store, spawns a process or touches a terminal.
-`handle_key` returns argv lists and the caller runs them, so the one writer stays the `ticket` CLI and its lock (#28, "the TUI is a frontend").
+`handle_key` returns `Command`s and the caller runs them, so the one writer stays the `ticket` CLI and its lock (#28, "the TUI is a frontend").
 The curses adapter is #37 and is deliberately too small to hold a bug.
 
 Rows are `view.row` dicts passed in, never held: a repaint after the poll is a new call with fresh rows rather than a mutation, and nothing here reads a row through the engine.
@@ -119,6 +119,21 @@ class State:
 
 
 @dataclass(frozen=True)
+class Command:
+    """One `ticket` invocation for the adapter to spawn.
+
+    `argv` is the CLI's own words, minus the interpreter and the module — the adapter builds `[sys.executable, "-m", "ticket", *argv]` around them and is the only thing that ever runs one.
+
+    `key` is the ticket the run belongs to, carried rather than parsed back out of `argv`.
+    Every site that builds a command already has the key in hand, and the adapter needs it to file the child's stderr and to know which row the `Popen` handle is evidence for; recovering it from a position in `argv` would make a convention about verb shape into something the TUI silently depends on.
+    `refresh` is the whole store's, so its key is `None`.
+    """
+
+    key: str | None
+    argv: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Contextual:
     """What ENTER will do, named before it is pressed.
 
@@ -126,7 +141,7 @@ class Contextual:
     """
 
     label: str
-    command: list[str] | None
+    command: Command | None
 
 
 def wants_attention(row: dict) -> bool:
@@ -170,11 +185,11 @@ def selected(state: State, rows: list[dict]) -> dict | None:
 
 
 def contextual(state: State, rows: list[dict]) -> Contextual:
-    """The contextual line and ENTER's argv, derived together.
+    """The contextual line and ENTER's command, derived together.
 
     #28 makes this the safety mechanism: the line names what ENTER will do, and if the two were computed separately they would eventually disagree — which is exactly the failure the line exists to prevent.
 
-    A gate names the literal command to copy and returns no argv.
+    A gate names the literal command to copy and returns none to run.
     Releasing a gate from the TUI is out of scope for v1, so this is the whole of what the TUI has to say about one.
     """
     return _contextual(selected(state, rows))
@@ -197,8 +212,10 @@ def _contextual(row: dict | None) -> Contextual:
         # `rest`, and anything the engine grows that no verb owns yet.
         return Contextual("nothing to run", None)
     verb, word, names_target = owner
-    argv = [verb, key, target] if names_target and target else [verb, key]
-    return Contextual(f"ENTER {word} {target if names_target else ''}".rstrip(), argv)
+    argv = (verb, key, target) if names_target and target else (verb, key)
+    return Contextual(
+        f"ENTER {word} {target if names_target else ''}".rstrip(), Command(key, argv)
+    )
 
 
 def _log_scrollable(state: State) -> bool:
@@ -259,7 +276,7 @@ def _inspected(state: State, row: dict) -> dict | None:
     return prs[(active + state.inspecting) % len(prs)]
 
 
-def log_path(row: dict | None) -> str | None:
+def _log_path(row: dict | None) -> str | None:
     """The log the pane tails: the running step's, else the last one recorded."""
     if row is None:
         return None
@@ -282,7 +299,7 @@ def _clamp_cursor(state: State, rows: list[dict]) -> State:
     return replace(state, cursor=cursor, offset=offset, inspecting=0)
 
 
-def _typed(state: State, rows: list[dict], key: str) -> tuple[State, list[list[str]]]:
+def _typed(state: State, rows: list[dict], key: str) -> tuple[State, list[Command]]:
     """Characters while `/` or `t` is collecting them."""
     buffer = "search" if state.mode == "search" else "entry"
     text = getattr(state, buffer)
@@ -292,7 +309,10 @@ def _typed(state: State, rows: list[dict], key: str) -> tuple[State, list[list[s
         return _clamp_cursor(cleared, rows), []
     if key in ENTER:
         if state.mode == "track" and text:
-            return replace(state, mode="list", entry=""), [["track", text]]
+            # The key is the text itself: `track` is the one verb whose ticket does not exist yet.
+            return replace(state, mode="list", entry=""), [
+                Command(text, ("track", text))
+            ]
         return replace(state, mode="list"), []
     if key in BACKSPACE:
         return _clamp_cursor(replace(state, **{buffer: text[:-1]}), rows), []
@@ -301,12 +321,10 @@ def _typed(state: State, rows: list[dict], key: str) -> tuple[State, list[list[s
     return state, []
 
 
-def handle_key(
-    state: State, rows: list[dict], key: str
-) -> tuple[State, list[list[str]]]:
+def handle_key(state: State, rows: list[dict], key: str) -> tuple[State, list[Command]]:
     """The key map from #28 as a pure reducer.
 
-    `commands` are argv lists for the `ticket` CLI, minus the interpreter and the module — the caller builds `[sys.executable, "-m", "ticket", ...]` around them and is the only thing that ever runs one.
+    `commands` are `Command`s, and nothing here runs one.
     """
     if state.mode != "list":
         return _typed(state, rows, key)
@@ -339,7 +357,7 @@ def handle_key(
     if key == "L":
         return replace(state, log_collapsed=not state.log_collapsed), []
     if key == "R":
-        return state, [["refresh"]]
+        return state, [Command(None, ("refresh",))]
     if key in DOWN or key in UP:
         step = 1 if key in DOWN else -1
         if log_has_focus(state):
@@ -356,17 +374,19 @@ def handle_key(
             return state, []
         return replace(state, inspecting=(state.inspecting + 1) % len(prs)), []
     if key == "o":
-        return (state, [["open", row["key"]]]) if row.get("pr") else (state, [])
+        if not row.get("pr"):
+            return state, []
+        return state, [Command(row["key"], ("open", row["key"]))]
     if key == "f":
         inspected = _inspected(state, row)
         if inspected is None:
             return state, []
-        command = ["findings", row["key"]]
+        argv = ("findings", row["key"])
         if not inspected["active"]:
             # `p` moves what the detail pane inspects without moving the engine's pointer, so an older PR has to be named explicitly.
             # `--pr` takes the number rather than the ref: `cli.pick_pr` matches on the `#N` suffix, so a whole `owner/repo#N` matches nothing and the run fails.
-            command += ["--pr", inspected["ref"].rsplit("#", 1)[-1]]
-        return state, [command]
+            argv += ("--pr", inspected["ref"].rsplit("#", 1)[-1])
+        return state, [Command(row["key"], argv)]
     return state, []
 
 
@@ -468,12 +488,27 @@ def _header(row: dict | None) -> str:
 def log_pane_open(state: State, row: dict | None, width: int, height: int) -> bool:
     """Whether a paint at this size draws a log pane at all.
 
-    Exported for the adapter, which puts the answer in `log_shown` the way it puts `list_capacity` in `viewport`.
+    `prepare` is what puts the answer in `log_shown`; this stays separate because `render` asks the same question again at paint time.
     The narrow layout shows one pane at a time and never a log, so `Tab` must not hand focus to one there.
     """
     if width < NARROW_WIDTH or state.log_collapsed or height < SHORT_HEIGHT:
         return False
-    return log_path(row) is not None
+    return _log_path(row) is not None
+
+
+def prepare(
+    state: State, rows: list[dict], width: int, height: int
+) -> tuple[State, str | None]:
+    """The frame's terminal-shaped state, and the log the pane wants tailed.
+
+    One call rather than four helpers the adapter has to sequence correctly: `viewport` has to be the capacity `render` will use, and `log_shown` has to be about the same row the path was asked for.
+    The path comes back only when a paint at this size would draw the pane, so a collapsed, narrow or short terminal costs the adapter no read at all.
+    """
+    row = selected(state, rows)
+    shown = log_pane_open(state, row, width, height)
+    return replace(state, viewport=list_capacity(height), log_shown=shown), (
+        _log_path(row) if shown else None
+    )
 
 
 def _footer(
@@ -579,7 +614,7 @@ def render(state: State, rows: list[dict], width: int, height: int) -> list[str]
     log_title = None
     log: list[str] = []
     if log_pane_open(state, row, width, height):
-        path = log_path(row)
+        path = _log_path(row)
         log_title = f"log  {path.rsplit('/', 1)[-1]}" if path else "log"
         log = _log_lines(state, right_w, max((body - 2) // 3, 1))
     frame = _frame(left, detail, "tickets", _header(row), log_title, log, width, body)

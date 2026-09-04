@@ -10,13 +10,11 @@ Mutual exclusion therefore stays the engine's, and the reducer refusing ENTER on
 
 from __future__ import annotations
 
-import contextlib
 import curses
 import os
 import subprocess
 import sys
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 
 from . import tui, view
@@ -26,49 +24,34 @@ from .store import Store
 # A tick that finds the store unchanged does no work at all: rows are rebuilt only when the mtimes move.
 POLL_MS = 1000
 
-# How much of a log the pane holds in memory.
+# How much of a log the pane holds in memory, and how far back from the end it reads to find it.
 # The pane shows a screenful, and the rest is what `j` scrolls back through.
 LOG_TAIL = 500
+LOG_TAIL_BYTES = 64 * 1024
 
 
-def _command_key(argv: list[str]) -> str | None:
-    """The ticket key a command names, when it names one.
-
-    Every verb the reducer emits takes the key first or takes none at all — `refresh` is the only keyless one — so this is a position, not a parse.
-    """
-    if len(argv) > 1 and not argv[1].startswith("-"):
-        return argv[1]
-    return None
-
-
-def spawn_error_path(store: Store, key: str) -> Path:
-    """Where a spawned run's stdout and stderr go.
-
-    One file per spawn, beside that run's own logs.
-    It is the only place an immediate crash can announce itself: the child dies before the engine has written anything, so without this the row simply never starts and says nothing about why.
-    """
-    directory = store.ticket_dir(key) / "logs"
-    directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return directory / f"spawn-{stamp}.err"
-
-
-def spawn(store: Store, argv: list[str], *, popen=subprocess.Popen) -> subprocess.Popen:
+def spawn(
+    store: Store, command: tui.Command, *, popen=subprocess.Popen
+) -> subprocess.Popen:
     """Run one `ticket` command as a detached child.
 
     `-m` rather than the console script, so the run is always the same interpreter and the same installed version as the TUI it was started from.
     `start_new_session=True` puts the child in its own session, so a twenty-minute handoff outlives the TUI and survives the terminal closing — which is the whole reason the TUI spawns instead of running the verb in-process.
 
-    A keyless command has nowhere in the store to write to, and a `logs/` directory at the store root would read as a pre-#27 layout to the migration, so its output is discarded rather than misfiled.
+    A command with no ticket to it — `refresh` — has nowhere in the store to write to, and a `logs/` directory at the store root would read as a pre-#27 layout to the migration, so its output is discarded rather than misfiled.
     """
-    key = _command_key(argv)
-    # The stack closes our end as soon as `Popen` returns, by which point the child has its own dup of the descriptor.
-    with contextlib.ExitStack() as stack:
-        stream = subprocess.DEVNULL
-        if key:
-            stream = stack.enter_context(open(spawn_error_path(store, key), "wb"))
+    argv = [sys.executable, "-m", "ticket", *command.argv]
+    if command.key is None:
         return popen(
-            [sys.executable, "-m", "ticket", *argv],
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    # Our end closes as soon as `Popen` returns, by which point the child has its own dup of the descriptor.
+    with open(store.spawn_err_path(command.key), "wb") as stream:
+        return popen(
+            argv,
             stdout=stream,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -84,23 +67,37 @@ def mark_running(rows: list[dict], pids: dict[str, int]) -> None:
     for row in rows:
         pid = pids.get(row["key"])
         if pid is not None and not row.get("running"):
-            row["running"] = {"pid": pid, "since": None, "log": None}
+            row["running"] = view.running(pid)
 
 
 def pulse(root: Path) -> tuple[int, int]:
-    """A value that changes whenever anything in the store does.
+    """A value that changes whenever anything `view.rows` reads does.
 
     Count and summed mtimes together, so an edit in place, a new file and a deleted one all move it.
     Cheaper than rebuilding rows, which is the point: the timer fires every second and almost every tick finds nothing.
+
+    `logs/` is walked past deliberately.
+    `tee` appends to a running step's log as the run writes (#29), so counting it would move the beat on every tick of every run — exactly when the store is busiest and the cache is worth the most — and nothing `rows` reads lives in there anyway.
+    The pane's own tail is a separate read, and it is the pane that wants to see a log grow.
     """
     count = 0
     total = 0
-    for directory, _subdirectories, files in os.walk(root):
-        for name in files:
+    # `scandir` rather than `os.walk`, so the mtime comes off the directory entry the walk already read instead of a second lookup by path.
+    pending = [root]
+    while pending:
+        try:
+            entries = list(os.scandir(pending.pop()))
+        except OSError:
+            continue
+        for entry in entries:
             try:
-                total += os.stat(os.path.join(directory, name)).st_mtime_ns
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name != "logs":
+                        pending.append(Path(entry.path))
+                    continue
+                total += entry.stat(follow_symlinks=False).st_mtime_ns
             except OSError:
-                # A log rotated away between the walk and the stat is a change like any other.
+                # A file rotated away between the walk and the stat is a change like any other.
                 # The next tick sees the store as it now is.
                 continue
             count += 1
@@ -111,16 +108,26 @@ def tail(store: Store, recorded: str | None) -> tuple[str, ...]:
     """The end of a step's log, for the pane that auto-tails it.
 
     `tee` appends as the run writes (#29), so this reads a file that is still growing and a partial last line is normal rather than an error.
+    Only the last `LOG_TAIL_BYTES` are read: a long run's log outgrows the pane by orders of magnitude, and this runs once a second for as long as the pane is open.
     """
     path = store.log_file(recorded)
     if path is None:
         return ()
+    start = 0
     try:
-        text = path.read_text(errors="replace")
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            start = max(0, handle.tell() - LOG_TAIL_BYTES)
+            handle.seek(start)
+            block = handle.read()
     except OSError:
         # A recorded path can outlive its file, and the pane is not the place to raise about it — `show` already reports a missing log.
         return ()
-    return tuple(text.splitlines()[-LOG_TAIL:])
+    lines = block.decode(errors="replace").splitlines()
+    if start:
+        # A block that does not start at the top of the file starts mid-line.
+        lines = lines[1:]
+    return tuple(lines[-LOG_TAIL:])
 
 
 def key_name(key: str | int) -> str:
@@ -142,14 +149,11 @@ def paint(screen, lines: list[str]) -> None:
     screen.erase()
     for index, line in enumerate(lines[:height]):
         room = width - 1 if index == height - 1 else width
-        if room <= 0:
-            continue
         try:
             screen.addnstr(index, 0, line, room)
         except curses.error:
             continue
-    screen.noutrefresh()
-    curses.doupdate()
+    screen.refresh()
 
 
 def loop(screen, ctx: view.Context) -> None:
@@ -161,6 +165,7 @@ def loop(screen, ctx: view.Context) -> None:
     runs: dict[str, subprocess.Popen] = {}
     rows: list[dict] = []
     seen: tuple[int, int] | None = None
+    painted: tuple | None = None
 
     while not state.quitting:
         beat = pulse(store.root)
@@ -172,15 +177,16 @@ def loop(screen, ctx: view.Context) -> None:
         mark_running(rows, {key: run.pid for key, run in runs.items()})
 
         height, width = screen.getmaxyx()
-        # `viewport` is what the reducer scrolls by and `list_capacity` is what the paint uses, so filling one from the other is what stops the two disagreeing about how far a page is.
-        row = tui.selected(state, rows)
-        state = replace(
-            state,
-            viewport=tui.list_capacity(height),
-            log_lines=tail(store, tui.log_path(row)),
-            log_shown=tui.log_pane_open(state, row, width, height),
-        )
-        paint(screen, tui.render(state, rows, width, height))
+        # `prepare` fills in the fields only a terminal can answer for and says which log the pane wants, so the ordering between them is a tested pure function rather than four calls in here.
+        state, log = tui.prepare(state, rows, width, height)
+        state = replace(state, log_lines=tail(store, log))
+
+        # A tick that changed nothing has nothing to redraw, and an idle TUI over ssh should not spend a screenful of bytes a second saying so.
+        # `state` carries the tail, so a log that grew still repaints.
+        frame = (beat, height, width, state, tuple(runs))
+        if frame != painted:
+            paint(screen, tui.render(state, rows, width, height))
+            painted = frame
 
         try:
             pressed = screen.get_wch()
@@ -190,9 +196,8 @@ def loop(screen, ctx: view.Context) -> None:
         state, commands = tui.handle_key(state, rows, key_name(pressed))
         for command in commands:
             child = spawn(store, command)
-            key = _command_key(command)
-            if key:
-                runs[key] = child
+            if command.key:
+                runs[command.key] = child
         if commands:
             # A spawn changes the store as soon as the child takes the lock, so do not wait out the rest of this second before looking.
             seen = None

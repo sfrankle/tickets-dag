@@ -8,7 +8,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import ClassVar
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,39 +43,39 @@ def tracked(env):
     return Store(env / "store")
 
 
-class FakePopen:
+@pytest.fixture
+def popen():
     """A `Popen` that records how it was called and never starts anything."""
+    calls: list[tuple[list[str], dict]] = []
 
-    calls: ClassVar[list[tuple[list[str], dict]]] = []
+    def fake(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=4823, poll=lambda: None)
 
-    def __init__(self, argv, **kwargs):
-        self.pid = 4823
-        FakePopen.calls.append((argv, kwargs))
-
-    def poll(self):
-        return None
+    fake.calls = calls
+    return fake
 
 
 # --- spawn ------------------------------------------------------------------
 
 
-def test_spawn_runs_the_module_the_reducer_asked_for(tracked):
+def test_spawn_runs_the_module_the_reducer_asked_for(tracked, popen):
     """`-m` and this interpreter, so a run is always the version that started it."""
-    FakePopen.calls = []
     command = tui.contextual(tui.State(), view.rows(view.Context.load())).command
-    tui_curses.spawn(tracked, command, popen=FakePopen)
-    argv, kwargs = FakePopen.calls[0]
+    tui_curses.spawn(tracked, command, popen=popen)
+    argv, kwargs = popen.calls[0]
 
-    assert command == ["run", "ABC-123", "implement"]
+    assert command == tui.Command("ABC-123", ("run", "ABC-123", "implement"))
     assert argv == [sys.executable, "-m", "ticket", "run", "ABC-123", "implement"]
     assert kwargs["start_new_session"] is True
 
 
-def test_spawn_sends_the_child_s_output_to_the_ticket_s_err_file(tracked):
+def test_spawn_sends_the_child_s_output_to_the_ticket_s_err_file(tracked, popen):
     """The only place an immediate crash can announce itself (#28, run model)."""
-    FakePopen.calls = []
-    tui_curses.spawn(tracked, ["run", "ABC-123", "implement"], popen=FakePopen)
-    _argv, kwargs = FakePopen.calls[0]
+    tui_curses.spawn(
+        tracked, tui.Command("ABC-123", ("run", "ABC-123", "implement")), popen=popen
+    )
+    _argv, kwargs = popen.calls[0]
     path = Path(kwargs["stdout"].name)
 
     assert path.parent == tracked.ticket_dir("ABC-123") / "logs"
@@ -83,11 +83,10 @@ def test_spawn_sends_the_child_s_output_to_the_ticket_s_err_file(tracked):
     assert kwargs["stderr"] is subprocess.STDOUT
 
 
-def test_a_keyless_spawn_writes_nowhere_in_the_store(tracked):
+def test_a_keyless_spawn_writes_nowhere_in_the_store(tracked, popen):
     """`refresh` names no ticket, and a `logs/` at the store root would read as a pre-#27 layout to the migration."""
-    FakePopen.calls = []
-    tui_curses.spawn(tracked, ["refresh"], popen=FakePopen)
-    _argv, kwargs = FakePopen.calls[0]
+    tui_curses.spawn(tracked, tui.Command(None, ("refresh",)), popen=popen)
+    _argv, kwargs = popen.calls[0]
 
     assert kwargs["stdout"] is subprocess.DEVNULL
 
@@ -120,3 +119,40 @@ def test_a_run_this_tui_started_is_running_before_the_lock_appears(tracked):
 
     assert rows[0]["running"]["pid"] == 4823
     assert tui.contextual(tui.State(), rows).command is None
+
+
+# --- the tick ---------------------------------------------------------------
+
+
+def test_the_pulse_does_not_move_when_only_a_log_grows(tracked):
+    """A running step appends to its log every few moments (#29), and rows read none of it.
+
+    Counting `logs/` would move the beat on every tick of every run, which is when the cache is worth the most.
+    """
+    log = tracked.log_path("ABC-123", "implement")
+    log.write_text("one\n")
+    before = tui_curses.pulse(tracked.root)
+    log.write_text("one\ntwo\n")
+
+    assert tui_curses.pulse(tracked.root) == before
+
+
+def test_the_pulse_moves_when_a_ticket_does(tracked):
+    """The other half: what rows do read has to be seen."""
+    before = tui_curses.pulse(tracked.root)
+    main(["track", "ABC-124", "--repo", "acme/api"])
+
+    assert tui_curses.pulse(tracked.root) != before
+
+
+def test_the_tail_reads_the_end_of_a_long_log_and_not_all_of_it(tracked):
+    """The pane shows a screenful, and this runs once a second for as long as it is open."""
+    log = tracked.log_path("ABC-123", "implement")
+    log.write_text("".join(f"line {n}\n" for n in range(200_000)))
+    lines = tui_curses.tail(tracked, tracked.relative(log))
+
+    assert len(lines) == tui_curses.LOG_TAIL
+    assert lines[-1] == "line 199999"
+    # A block that starts mid-line drops its first, so nothing is reported as a
+    # line that was never written as one.
+    assert all(line.startswith("line ") for line in lines)
