@@ -15,13 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace as replace_fields
-from datetime import UTC, datetime
-from pathlib import Path
 
 from .config import Config, load_config
 from .errors import TicketError
-from .resolve import Action, active_pr, next_action, review_status
-from .store import Store, stamp
+from .resolve import Action, active_pr, next_action, open_findings, review_status
+from .store import Store
 
 
 @dataclass
@@ -135,20 +133,6 @@ def _reviews(ctx: Context, pr: dict | None) -> list[dict]:
     ]
 
 
-def _open_findings(findings: dict | None) -> int:
-    """How many of a PR's findings are still open.
-
-    Counted twice over — once for the active PR, once per registered PR — so the rule for what counts as open lives in one place.
-    """
-    return len(
-        [
-            f
-            for f in (findings or {"findings": []})["findings"]
-            if f.get("status") == "open"
-        ]
-    )
-
-
 def _prs(
     ctx: Context, ticket: dict, pr_ref: str | None, findings: dict | None
 ) -> list[dict]:
@@ -161,29 +145,28 @@ def _prs(
     """
     entries = []
     for ref in ticket.get("prs") or []:
-        doc = findings if ref == pr_ref else ctx.store.read_findings(ref, ticket["key"])
+        active = ref == pr_ref
+        doc = findings if active else ctx.store.read_findings(ref, ticket["key"])
         entries.append(
             {
                 "ref": ref,
-                "open_findings": _open_findings(doc),
-                "active": ref == pr_ref,
+                "open_findings": len(open_findings(doc)),
+                "active": active,
             }
         )
     return entries
 
 
-def _lock_taken_at(path: Path) -> str | None:
-    """When a lock was taken: its file's mtime, written once and never touched again.
+@dataclass(frozen=True)
+class Lock:
+    """The three lock fields of a row, named here so `row` can name them too."""
 
-    `None` when the file has gone, since the run holding it may release it between the status read and this one.
-    """
-    try:
-        return stamp(datetime.fromtimestamp(path.stat().st_mtime, UTC))
-    except OSError:
-        return None
+    running: dict | None
+    state: str | None
+    path: str | None
 
 
-def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> dict:
+def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock:
     """The lock's word, the file behind it, and the run holding it when one is alive.
 
     `held` and `stale` are the same file: the pid it records is what separates a run still working from one that died without releasing it.
@@ -194,20 +177,20 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> dict
     """
     status = ctx.store.lock_status(ticket["key"])
     if status is None:
-        return {"running": None, "lock": None, "lock_path": None}
-    path = ctx.store.lock_path(ticket["key"])
+        return Lock(running=None, state=None, path=None)
+    path = str(ctx.store.lock_path(ticket["key"]))
     if not status.alive:
-        return {"running": None, "lock": "stale", "lock_path": str(path)}
-    logs = {step["id"]: step["log"] for step in steps}
-    return {
-        "running": {
-            "pid": status.pid,
-            "since": _lock_taken_at(path),
-            "log": logs.get(action.target) if action.kind == "step" else None,
-        },
-        "lock": "held",
-        "lock_path": str(path),
-    }
+        return Lock(running=None, state="stale", path=path)
+    log = (
+        next((s["log"] for s in steps if s["id"] == action.target), None)
+        if action.kind == "step"
+        else None
+    )
+    return Lock(
+        running={"pid": status.pid, "since": status.taken_at, "log": log},
+        state="held",
+        path=path,
+    )
 
 
 def row(ctx: Context, ticket: dict) -> dict:
@@ -218,6 +201,7 @@ def row(ctx: Context, ticket: dict) -> dict:
     pr, findings = documents(inner, ticket, pr_ref)
     action = resolve_for(inner, ticket, pr_ref, documents_read=(pr, findings))
     steps = _steps(inner, ticket)
+    lock = _lock(inner, ticket, action, steps)
     return {
         "key": ticket["key"],
         "repo": ticket.get("repo", ""),
@@ -225,10 +209,12 @@ def row(ctx: Context, ticket: dict) -> dict:
         "pr": pr_ref,
         "prs": _prs(inner, ticket, pr_ref, findings),
         "next": {"kind": action.kind, "target": action.target, "reason": action.reason},
-        "open_findings": _open_findings(findings),
+        "open_findings": len(open_findings(findings)),
         "steps": steps,
         "reviews": _reviews(inner, pr),
-        **_lock(inner, ticket, action, steps),
+        "running": lock.running,
+        "lock": lock.state,
+        "lock_path": lock.path,
     }
 
 

@@ -68,9 +68,7 @@ def row_for(key: str = "ABC-123") -> dict:
 
 def with_pr(store: Store, pr: dict | None = None, key: str = "ABC-123") -> None:
     """Register a PR on the ticket, and optionally write its document."""
-    ticket = store.read_ticket(key)
-    ticket["prs"] = ["acme/api#115"]
-    store.write_ticket(ticket)
+    with_prs(store, ["acme/api#115"], key=key)
     if pr is not None:
         store.write_pr({"pr": "acme/api#115", "key": key, **pr})
 
@@ -185,9 +183,14 @@ def test_the_existing_keys_are_unchanged(tracked):
 # --- prs ------------------------------------------------------------------
 
 
-def with_prs(store: Store, refs: list[str], active: str | None = None) -> None:
+def with_prs(
+    store: Store,
+    refs: list[str],
+    active: str | None = None,
+    key: str = "ABC-123",
+) -> None:
     """Register several PRs, and optionally point `active` at one of them."""
-    ticket = store.read_ticket("ABC-123")
+    ticket = store.read_ticket(key)
     ticket["prs"] = refs
     if active:
         ticket["active"] = active
