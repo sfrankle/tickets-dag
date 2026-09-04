@@ -75,6 +75,14 @@ WRITE_VERBS = {
 # --- output ---------------------------------------------------------------
 
 
+def _open_suffix(count: int) -> str:
+    """How an open-findings count is written wherever one is printed.
+
+    `view` already decides what counts as open; this is the other half of that — the rule for how it reads.
+    """
+    return f"  {count} open" if count else ""
+
+
 def print_queue(ctx: Context, as_json: bool) -> int:
     queue = view.rows(ctx)
     if as_json:
@@ -88,7 +96,7 @@ def print_queue(ctx: Context, as_json: bool) -> int:
     width = max(len(r["key"]) for r in queue)
     for row in queue:
         target = f" {row['next']['target']}" if row["next"]["target"] else ""
-        findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
+        findings = _open_suffix(row["open_findings"])
         print(f"{row['key']:<{width}}  {row['next']['kind']}{target}{findings}")
     return 0
 
@@ -101,8 +109,13 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
         return 0
     print(f"{row['key']}  {row['repo']}  {row['summary']}".rstrip())
     if row["pr"]:
-        findings = f"  {row['open_findings']} open" if row["open_findings"] else ""
+        findings = _open_suffix(row["open_findings"])
         print(f"PR: {row['pr']}{findings}")
+    if len(row["prs"]) > 1:
+        # The `PR:` line names the active one, and that is the only PR `next` ever drives; an older PR's open findings are otherwise invisible.
+        for pr in row["prs"]:
+            marker = "*" if pr["active"] else " "
+            print(f"  {marker} {pr['ref']}{_open_suffix(pr['open_findings'])}")
     for step in row["steps"]:
         missing = "  (log missing)" if step["log_missing"] else ""
         print(f"  {step['id']:<16} {step['status'] or '-'}{missing}")
@@ -113,6 +126,15 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     print(
         f"next: {row['next']['kind']} {row['next']['target'] or ''} — {row['next']['reason']}"
     )
+    if row["running"]:
+        log = f"  {row['running']['log']}" if row["running"]["log"] else ""
+        print(
+            f"running: pid {row['running']['pid']} since {row['running']['since']}{log}"
+        )
+    elif row["lock"] == "stale":
+        # The one place a stale lock is reported before it breaks something: otherwise it surfaces as the next run refusing to take the lock.
+        print(f"stale lock: {row['lock_path']}")
+        print(f"clear it with: ticket unlock {row['key']}")
     return 0
 
 

@@ -56,9 +56,17 @@ def legacy_pr_slug(pr_ref: str) -> str:
     return f"{repo.replace('/', '-')}_{number}"
 
 
+def _stamp(when: datetime) -> str:
+    """UTC timestamp in the form the store records everywhere.
+
+    Takes the moment rather than reading the clock, so a time that came off the filesystem — a lock file's mtime, say — is written the same way as one the store minted itself.
+    """
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def now() -> str:
-    """UTC timestamp in the form the store records everywhere."""
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """The current moment, stamped."""
+    return _stamp(datetime.now(UTC))
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -119,12 +127,12 @@ class Store:
         """
         directory = self.ticket_dir(key) / "logs"
         directory.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = directory / f"{step}-{stamp}.log"
+        started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = directory / f"{step}-{started}.log"
         attempt = 1
         while path.exists():
             attempt += 1
-            path = directory / f"{step}-{stamp}-{attempt}.log"
+            path = directory / f"{step}-{started}-{attempt}.log"
         return path
 
     def relative(self, path: Path) -> str:
@@ -272,12 +280,20 @@ class Store:
         `None` means nothing holds it. Otherwise the pid the lock file records,
         and whether a process with that pid exists — which is what separates a
         run still working from one that died without releasing (issue #27).
+
+        `taken_at` is the file's mtime, written once when the lock was taken and
+        never touched again; one `stat` answers both whether the file is there
+        and when, so a reader never has to go back to the path itself.
         """
         path = self.lock_path(key)
-        if not path.exists():
+        try:
+            taken_at = path.stat().st_mtime
+        except OSError:
             return None
-        pid = _lock_pid(path)
-        return LockStatus(pid=pid)
+        return LockStatus(
+            pid=_lock_pid(path),
+            taken_at=_stamp(datetime.fromtimestamp(taken_at, UTC)),
+        )
 
     def clear_lock(self, key: str) -> None:
         self.lock_path(key).unlink(missing_ok=True)
@@ -309,6 +325,7 @@ class Store:
 @dataclass(frozen=True)
 class LockStatus:
     pid: int | None
+    taken_at: str
 
     @property
     def alive(self) -> bool:

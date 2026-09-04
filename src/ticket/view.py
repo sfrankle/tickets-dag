@@ -18,7 +18,7 @@ from dataclasses import replace as replace_fields
 
 from .config import Config, load_config
 from .errors import TicketError
-from .resolve import Action, active_pr, next_action, review_status
+from .resolve import Action, active_pr, next_action, open_findings, review_status
 from .store import Store
 
 
@@ -133,6 +133,66 @@ def _reviews(ctx: Context, pr: dict | None) -> list[dict]:
     ]
 
 
+def _prs(
+    ctx: Context, ticket: dict, pr_ref: str | None, findings: dict | None
+) -> list[dict]:
+    """One entry per registered PR, each with its own open count.
+
+    Findings are a document per PR rather than one list to re-slice, so this is a read apiece; the active PR's is already in hand and is not read twice.
+
+    `active` is the pointer's answer and not the newest registration: `--pr` moves the pointer and the move sticks (#33), so `prs[-1]` is only what `active_pr` falls back to.
+    The resolver still only ever drives the active one, which is why an older PR's open findings are worth surfacing here — nothing else reports them.
+    """
+    entries = []
+    for ref in ticket.get("prs") or []:
+        active = ref == pr_ref
+        doc = findings if active else ctx.store.read_findings(ref, ticket["key"])
+        entries.append(
+            {
+                "ref": ref,
+                "open_findings": len(open_findings(doc)),
+                "active": active,
+            }
+        )
+    return entries
+
+
+@dataclass(frozen=True)
+class Lock:
+    """The three lock fields of a row, named here so `row` can name them too."""
+
+    running: dict | None
+    state: str | None
+    path: str | None
+
+
+def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock:
+    """The lock's word, the file behind it, and the run holding it when one is alive.
+
+    `held` and `stale` are the same file: the pid it records is what separates a run still working from one that died without releasing it.
+    A stale lock is nobody's run, so there is no `running` to report and the path is the thing worth having — it is what a caller has to name to clear it, and today nothing but the failure of the next run mentions one at all.
+
+    What is running is the resolver's answer rather than anything the lock records: the file holds a pid and nothing else, and a live holder is by definition working on whatever `next` names.
+    Only a step has a log, so a held lock over a review, collect or fix reports none.
+    """
+    status = ctx.store.lock_status(ticket["key"])
+    if status is None:
+        return Lock(running=None, state=None, path=None)
+    path = str(ctx.store.lock_path(ticket["key"]))
+    if not status.alive:
+        return Lock(running=None, state="stale", path=path)
+    log = (
+        next((s["log"] for s in steps if s["id"] == action.target), None)
+        if action.kind == "step"
+        else None
+    )
+    return Lock(
+        running={"pid": status.pid, "since": status.taken_at, "log": log},
+        state="held",
+        path=path,
+    )
+
+
 def row(ctx: Context, ticket: dict) -> dict:
     inner = scoped(ctx, ticket)
     pr_ref = active_pr(ticket)
@@ -140,20 +200,21 @@ def row(ctx: Context, ticket: dict) -> dict:
     # whole contract, so it should not cost twice the reads to build.
     pr, findings = documents(inner, ticket, pr_ref)
     action = resolve_for(inner, ticket, pr_ref, documents_read=(pr, findings))
-    open_findings = [
-        f
-        for f in (findings or {"findings": []})["findings"]
-        if f.get("status") == "open"
-    ]
+    steps = _steps(inner, ticket)
+    lock = _lock(inner, ticket, action, steps)
     return {
         "key": ticket["key"],
         "repo": ticket.get("repo", ""),
         "summary": ticket.get("summary", ""),
         "pr": pr_ref,
+        "prs": _prs(inner, ticket, pr_ref, findings),
         "next": {"kind": action.kind, "target": action.target, "reason": action.reason},
-        "open_findings": len(open_findings),
-        "steps": _steps(inner, ticket),
+        "open_findings": len(open_findings(findings)),
+        "steps": steps,
         "reviews": _reviews(inner, pr),
+        "running": lock.running,
+        "lock": lock.state,
+        "lock_path": lock.path,
     }
 
 
