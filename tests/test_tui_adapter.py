@@ -115,10 +115,22 @@ def test_a_dead_pid_renders_a_stale_lock_and_not_a_running_row(tracked):
 def test_a_run_this_tui_started_is_running_before_the_lock_appears(tracked):
     """The first source: between the spawn and the child taking the lock, the handle is the only thing that knows."""
     rows = view.rows(view.Context.load())
+    marked = tui_curses.mark_running(rows, {"ABC-123": 4823})
+
+    assert marked[0]["running"]["pid"] == 4823
+    assert tui.contextual(tui.State(), marked).command is None
+
+
+def test_the_marker_goes_when_the_handle_does(tracked):
+    """`o` and `f` write nothing, so the store never moves and the cached rows are never rebuilt.
+
+    A marker written into those rows would outlive the child for as long as the store stayed still, which is the whole time the TUI sits on a finished `open`.
+    """
+    rows = view.rows(view.Context.load())
     tui_curses.mark_running(rows, {"ABC-123": 4823})
 
-    assert rows[0]["running"]["pid"] == 4823
-    assert tui.contextual(tui.State(), rows).command is None
+    assert rows[0]["running"] is None
+    assert tui_curses.mark_running(rows, {})[0]["running"] is None
 
 
 # --- the tick ---------------------------------------------------------------
@@ -156,3 +168,48 @@ def test_the_tail_reads_the_end_of_a_long_log_and_not_all_of_it(tracked):
     # A block that starts mid-line drops its first, so nothing is reported as a
     # line that was never written as one.
     assert all(line.startswith("line ") for line in lines)
+
+
+# --- the spawn's err file ---------------------------------------------------
+
+
+def test_an_unsafe_key_makes_no_directory_before_the_child_refuses_it(tracked, popen):
+    """`t` collects whatever is typed, and the text reaches `spawn` before any child has validated it.
+
+    `cli.main` guards the same thing, but this runs first: naming the err file would create the directory the key points at.
+    """
+    outside = tracked.root.parent / "oops"
+    _child, err = tui_curses.spawn(
+        tracked, tui.Command("../../oops", ("track", "../../oops")), popen=popen
+    )
+    _argv, kwargs = popen.calls[0]
+
+    assert err is None
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert not outside.exists()
+    # The rejection stays the CLI's, with its sentence.
+    assert main(["track", "../../oops"]) == 1
+
+
+def test_a_spawn_that_wrote_nothing_leaves_no_file_behind(tracked, popen):
+    """One err file is named per keyed spawn, before the child exists — so a run that works leaves a 0-byte file per keypress beside the real logs."""
+    _child, err = tui_curses.spawn(
+        tracked, tui.Command("ABC-123", ("open", "ABC-123")), popen=popen
+    )
+    assert err.is_file()
+
+    tui_curses.discard_empty(err)
+
+    assert not err.exists()
+
+
+def test_a_spawn_that_crashed_keeps_what_it_said(tracked, popen):
+    """The only place an immediate crash can announce itself, so the pruning has to be about empty files and not about finished ones."""
+    _child, err = tui_curses.spawn(
+        tracked, tui.Command("ABC-123", ("open", "ABC-123")), popen=popen
+    )
+    err.write_text("Traceback (most recent call last):\n")
+
+    tui_curses.discard_empty(err)
+
+    assert err.is_file()

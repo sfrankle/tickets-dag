@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -33,6 +34,24 @@ from .errors import StoreError
 UNKEYED = "_unkeyed"
 """Where a PR whose ticket cannot be named lands.
 Nothing writes a `state.json` there, so it never shows up as a ticket; a later read still finds the file."""
+
+# The one rule the store has about a key's spelling: it becomes a single path
+# segment. Shape is left to `key_pattern:` in config — tickets come from Jira,
+# Linear, GitHub issues or nothing at all.
+UNSAFE_KEY_RE = re.compile(r"[\s/\\]")
+
+
+def is_safe_key(key: str) -> bool:
+    """Whether a key can be interpolated into a store path.
+
+    Here rather than in the CLI because the CLI is no longer the only caller: the TUI names a ticket's spawn log before the child it spawns has validated anything (#37), and a second copy of this rule over there would be the one that drifts.
+    """
+    return bool(
+        key
+        and not UNSAFE_KEY_RE.search(key)
+        and not key.startswith("-")
+        and key not in (".", "..")
+    )
 
 
 def pr_slug(pr_ref: str) -> str:

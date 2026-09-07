@@ -18,7 +18,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import tui, view
-from .store import Store
+from .errors import TicketError
+from .store import Store, is_safe_key
 
 # One timer, one second (#28).
 # A tick that finds the store unchanged does no work at all: rows are rebuilt only when the mtimes move.
@@ -32,42 +33,73 @@ LOG_TAIL_BYTES = 64 * 1024
 
 def spawn(
     store: Store, command: tui.Command, *, popen=subprocess.Popen
-) -> subprocess.Popen:
+) -> tuple[subprocess.Popen, Path | None]:
     """Run one `ticket` command as a detached child.
 
     `-m` rather than the console script, so the run is always the same interpreter and the same installed version as the TUI it was started from.
     `start_new_session=True` puts the child in its own session, so a twenty-minute handoff outlives the TUI and survives the terminal closing — which is the whole reason the TUI spawns instead of running the verb in-process.
 
     A command with no ticket to it — `refresh` — has nowhere in the store to write to, and a `logs/` directory at the store root would read as a pre-#27 layout to the migration, so its output is discarded rather than misfiled.
+
+    A key that cannot be a path segment is treated the same way, and for a sharper reason: `t` collects whatever is typed and `track` is the one verb whose ticket does not exist yet, so the text reaches here before any child has validated it.
+    `cli.main` guards the same thing before its lock interpolates a key, but this runs first — naming the err file would `mkdir` the directory `../../oops` names before `track` ever got the chance to refuse it.
+    Discarding the output rather than refusing the spawn keeps the rejection the CLI's, with its sentence.
+
+    Returns the child and the file its output went to, so the caller can drop that file if the run had nothing to say.
     """
     argv = [sys.executable, "-m", "ticket", *command.argv]
-    if command.key is None:
+    if command.key is None or not is_safe_key(command.key):
         return popen(
             argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-        )
+        ), None
+    path = store.spawn_err_path(command.key)
     # Our end closes as soon as `Popen` returns, by which point the child has its own dup of the descriptor.
-    with open(store.spawn_err_path(command.key), "wb") as stream:
+    with open(path, "wb") as stream:
         return popen(
             argv,
             stdout=stream,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-        )
+        ), path
 
 
-def mark_running(rows: list[dict], pids: dict[str, int]) -> None:
+def discard_empty(path: Path | None) -> None:
+    """Drop a spawn err file the run had nothing to write to.
+
+    One is named per keyed spawn, before the child exists and therefore before anything knows whether it will crash (see `spawn`), so a `run`, `open` or `findings` that works leaves a 0-byte file per keypress in that ticket's `logs/` — beside the real ones, and outnumbering them by the end of a session.
+    Only ever called on a child that has already been reaped: the file is the live one's stdout.
+    """
+    if path is None:
+        return
+    try:
+        if path.stat().st_size == 0:
+            path.unlink()
+    except OSError:
+        # Already gone, or not ours to remove. Either way there is nothing here worth interrupting a repaint for.
+        pass
+
+
+def mark_running(rows: list[dict], pids: dict[str, int]) -> list[dict]:
     """Report a run this TUI started that the lock file has not caught up with.
 
     Liveness has two sources (#28) and this is the second one: `locks/<KEY>.lock` covers every run, including ones started in another terminal, but only once the child has got as far as taking it.
     Between the spawn and that moment the `Popen` handle is the only thing that knows, and without it ENTER would stay live on a row that is already starting.
+
+    A new list of rows rather than a marker written into the ones passed in.
+    The overlay has to disappear when the handle does, and the rows the adapter holds are a cache it rebuilds only when the store's mtimes move: marking one in place makes the overlay outlive the child by however long the store stays still, which for `o` and `f` — neither of which writes anything — is forever.
+    Rebuilding it from `pids` every tick means there is nothing to clear.
     """
+    marked = []
     for row in rows:
         pid = pids.get(row["key"])
         if pid is not None and not row.get("running"):
-            row["running"] = view.running(pid)
+            marked.append({**row, "running": view.running(pid)})
+        else:
+            marked.append(row)
+    return marked
 
 
 def pulse(root: Path) -> tuple[int, int]:
@@ -162,28 +194,40 @@ def loop(screen, ctx: view.Context) -> None:
     screen.timeout(POLL_MS)
     store = ctx.store
     state = tui.State()
-    runs: dict[str, subprocess.Popen] = {}
-    rows: list[dict] = []
+    # A list rather than a dict keyed by ticket: `o` and `f` are not gated on `running`, so a second press on the same row is an ordinary thing to do and a dict would drop the first handle on the floor unreaped.
+    runs: list[tuple[str, subprocess.Popen, Path | None]] = []
+    cached: list[dict] = []
     seen: tuple[int, int] | None = None
     painted: tuple | None = None
+    tailed: str | None = None
 
     while not state.quitting:
         beat = pulse(store.root)
         if beat != seen:
-            rows = view.rows(ctx)
+            cached = view.rows(ctx)
             seen = beat
         # Reaped rather than waited on, because a child that has finished is no longer evidence of anything: the lock and the store are.
-        runs = {key: run for key, run in runs.items() if run.poll() is None}
-        mark_running(rows, {key: run.pid for key, run in runs.items()})
+        alive = []
+        for key, run, err in runs:
+            if run.poll() is None:
+                alive.append((key, run, err))
+            else:
+                discard_empty(err)
+        runs = alive
+        rows = mark_running(cached, {key: run.pid for key, run, _ in runs})
 
         height, width = screen.getmaxyx()
         # `prepare` fills in the fields only a terminal can answer for and says which log the pane wants, so the ordering between them is a tested pure function rather than four calls in here.
         state, log = tui.prepare(state, rows, width, height)
-        state = replace(state, log_lines=tail(store, log))
+        lines = tail(store, log)
+        # The offset belongs to the log it was scrolled through. Moving the cursor to another ticket, or a rotated log coming back shorter, would otherwise leave it scrolled past the end of a file with content in it and the pane would say "(no output yet)" about it.
+        offset = 0 if log != tailed else min(state.log_offset, max(len(lines) - 1, 0))
+        state = replace(state, log_lines=lines, log_offset=offset)
+        tailed = log
 
         # A tick that changed nothing has nothing to redraw, and an idle TUI over ssh should not spend a screenful of bytes a second saying so.
         # `state` carries the tail, so a log that grew still repaints.
-        frame = (beat, height, width, state, tuple(runs))
+        frame = (beat, height, width, state, tuple(key for key, _, _ in runs))
         if frame != painted:
             paint(screen, tui.render(state, rows, width, height))
             painted = frame
@@ -195,9 +239,9 @@ def loop(screen, ctx: view.Context) -> None:
             continue
         state, commands = tui.handle_key(state, rows, key_name(pressed))
         for command in commands:
-            child = spawn(store, command)
+            child, err = spawn(store, command)
             if command.key:
-                runs[command.key] = child
+                runs.append((command.key, child, err))
         if commands:
             # A spawn changes the store as soon as the child takes the lock, so do not wait out the rest of this second before looking.
             seen = None
@@ -209,5 +253,12 @@ def run() -> int:
     Loaded with syncing off: the network is touched by `R` alone (#28), which spawns `ticket refresh` like any other verb.
     """
     ctx = view.Context.load(no_sync=True)
-    curses.wrapper(loop, ctx)
+    try:
+        curses.wrapper(loop, ctx)
+    except curses.error as exc:
+        # `ticket tui` piped, redirected or run under CI has no terminal to set up, and the raw `setupterm` error says nothing about which verb to reach for instead.
+        raise TicketError(
+            f"`ticket tui` needs a terminal curses can drive ({exc}). "
+            f"Try `ticket show` or `ticket next` instead."
+        ) from exc
     return 0
