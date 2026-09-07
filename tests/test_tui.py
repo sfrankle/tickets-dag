@@ -1,7 +1,7 @@
 """The TUI's pure layer (#36): `render` as text, `handle_key` as data.
 
 No curses and no subprocess, because there is nothing here that needs either.
-`commands` are argv lists and these tests never execute one — that is the point of returning them rather than running them.
+`commands` are `Command` values and these tests never execute one — that is the point of returning them rather than running them.
 
 The rows are hand-built dicts in the shape `view.row` returns.
 Building them here rather than through a store keeps these tests about the screen: what `view` puts in the dict is `test_view.py`'s question.
@@ -11,7 +11,7 @@ import ast
 from pathlib import Path
 
 from ticket import tui
-from ticket.tui import HELP_ENTRIES, State, contextual, handle_key, render
+from ticket.tui import HELP_ENTRIES, Command, State, contextual, handle_key, render
 
 # `Tab` and `ENTER` are named in the help pane and typed as control characters.
 AS_TYPED = {"ENTER": "\n", "Tab": "\t"}
@@ -205,7 +205,7 @@ def test_enter_on_a_failed_step_runs_it():
         ],
     )
     _, commands = handle_key(State(), [row], "\n")
-    assert commands == [["run", "ABC-123", "implement"]]
+    assert commands == [Command("ABC-123", ("run", "ABC-123", "implement"))]
 
 
 def test_enter_on_a_running_row_emits_nothing():
@@ -225,8 +225,12 @@ def test_enter_collects_and_fixes_by_the_resolver_s_answer():
     fix = make_row(
         "ABC-2", pr="acme/api#2", next={"kind": "fix", "target": "f03", "reason": "r"}
     )
-    assert handle_key(State(), [collect], "\n")[1] == [["collect", "ABC-1"]]
-    assert handle_key(State(), [fix], "\n")[1] == [["fix", "ABC-2", "f03"]]
+    assert handle_key(State(), [collect], "\n")[1] == [
+        Command("ABC-1", ("collect", "ABC-1"))
+    ]
+    assert handle_key(State(), [fix], "\n")[1] == [
+        Command("ABC-2", ("fix", "ABC-2", "f03"))
+    ]
 
 
 def test_p_cycles_the_inspected_pr_without_emitting():
@@ -254,10 +258,12 @@ def test_f_names_an_older_pr_because_p_did_not_move_the_pointer():
         ],
     )
     # The pane opens on the active PR, which is the one the engine's pointer names.
-    assert handle_key(State(), [row], "f")[1] == [["findings", "ABC-123"]]
+    assert handle_key(State(), [row], "f")[1] == [
+        Command("ABC-123", ("findings", "ABC-123"))
+    ]
     # The number, not the ref: `cli.pick_pr` matches on the `#N` suffix.
     assert handle_key(State(inspecting=1), [row], "f")[1] == [
-        ["findings", "ABC-123", "--pr", "112"]
+        Command("ABC-123", ("findings", "ABC-123", "--pr", "112"))
     ]
 
 
@@ -368,14 +374,16 @@ def test_t_collects_a_key_and_enter_tracks_it():
         state, commands = handle_key(state, rows, char)
         assert commands == []
     state, commands = handle_key(state, rows, "\n")
-    assert commands == [["track", "XYZ-9"]]
+    assert commands == [Command("XYZ-9", ("track", "XYZ-9"))]
     assert (state.mode, state.entry) == ("list", "")
 
 
 def test_o_and_r_emit_the_verbs_they_are_named_after():
     row = make_row("ABC-123", pr="acme/api#115")
-    assert handle_key(State(), [row], "o")[1] == [["open", "ABC-123"]]
-    assert handle_key(State(), [row], "R")[1] == [["refresh"]]
+    assert handle_key(State(), [row], "o")[1] == [
+        Command("ABC-123", ("open", "ABC-123"))
+    ]
+    assert handle_key(State(), [row], "R")[1] == [Command(None, ("refresh",))]
     # Nothing to open before the first PR.
     assert handle_key(State(), [make_row("ABC-1")], "o")[1] == []
 
@@ -422,6 +430,32 @@ def test_the_status_line_carries_the_sync_age_the_adapter_words():
     assert "last sync" not in "".join(render(State(), rows, 100, 24))
     screen = "".join(render(State(synced="4m ago"), rows, 100, 24))
     assert "last sync 4m ago" in screen
+
+
+# --- prepare ----------------------------------------------------------------
+
+
+def test_prepare_fills_in_what_only_a_terminal_knows():
+    """`viewport` has to be the capacity `render` will use, or the two disagree about how far a page is."""
+    state, log = tui.prepare(State(), [make_row("ABC-1")], 160, 40)
+
+    assert state.viewport == tui.list_capacity(40)
+    assert state.log_shown is False
+    assert log is None
+
+
+def test_prepare_names_a_log_only_when_the_pane_would_be_drawn():
+    """The path is what the adapter reads a file for, so a pane that is not on screen must not ask for one."""
+    row = make_row(
+        "ABC-1", running={"pid": 1, "since": None, "log": "logs/implement.log"}
+    )
+    state, log = tui.prepare(State(), [row], 160, 40)
+    collapsed, no_log = tui.prepare(State(log_collapsed=True), [row], 160, 40)
+    narrow, too_narrow = tui.prepare(State(), [row], 80, 40)
+
+    assert state.log_shown and log == "logs/implement.log"
+    assert collapsed.log_shown is False and no_log is None
+    assert narrow.log_shown is False and too_narrow is None
 
 
 # --- guard ------------------------------------------------------------------

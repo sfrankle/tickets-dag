@@ -179,6 +179,14 @@ def _prs(
     return entries
 
 
+def running(pid: int, since: str | None = None, log: str | None = None) -> dict:
+    """The `running` field of a row, built in the one place that names its shape.
+
+    The TUI has a second source for the same fact (#37: a run it spawned that the lock file has not caught up with), and a second untyped constructor over there would drift from this one.
+    """
+    return {"pid": pid, "since": since, "log": log}
+
+
 @dataclass(frozen=True)
 class Lock:
     """The three lock fields of a row, named here so `row` can name them too."""
@@ -209,7 +217,7 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock
         else None
     )
     return Lock(
-        running={"pid": status.pid, "since": status.taken_at, "log": log},
+        running=running(status.pid, status.taken_at, log),
         state="held",
         path=path,
     )

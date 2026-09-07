@@ -4,7 +4,7 @@ Fixed verbs. The verb set does not grow when the config does: adding a step to
 YAML changes what `next` does and what `run` accepts, and adds nothing here.
 
 Two families of verb, and `--help` says which is which (issue #12).
-Management verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config` — are the engine's own and mean the same thing under every config.
+Management verbs — `show`, `track`, `refresh`, `next`, `reset`, `log`, `stages`, `config`, `tui` — are the engine's own and mean the same thing under every config.
 Stage verbs — `run`, `skip`, `release`, `review`, `collect`, `fix`, ... — are also the engine's, but every name they take as an argument comes from config, and `ticket stages --list` is where those names are read.
 
 A stage exists because config declares it, not because the store has a row for it: the store only records what has happened to a stage.
@@ -30,23 +30,12 @@ from .config import Config, RepoGuess, config_path, load_config
 from .effort import EFFORTS
 from .errors import GhError, StoreError, TicketError
 from .resolve import Action, active_pr, open_findings, orphan_steps
-from .store import Store, now
+from .store import Store, is_safe_key, now
 from .view import Context, load_ticket, resolve_for, scoped
 
 # A key is not just a label: it is a store filename, a lock filename, a log
-# directory and a worktree directory. The engine therefore checks only that it
-# is a safe single path segment and leaves shape to `key_pattern:` in config —
-# tickets come from Jira, Linear, GitHub issues or nothing at all.
-UNSAFE_KEY_RE = re.compile(r"[\s/\\]")
-
-
-def is_safe_key(key: str) -> bool:
-    return bool(
-        key
-        and not UNSAFE_KEY_RE.search(key)
-        and not key.startswith("-")
-        and key not in (".", "..")
-    )
+# directory and a worktree directory, so `is_safe_key` lives beside the paths it
+# guards in `store.py` and is imported here.
 
 
 # Verbs that change something. `main` takes the per-ticket advisory lock around
@@ -1084,6 +1073,23 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_tui(args) -> int:
+    """The queue as a screen that stays put and stays current (#28).
+
+    Imported here rather than at the top because `curses` is the one dependency a single verb has.
+    Every other verb should keep working on a terminal that cannot give one — and that promise covers this verb's own failure too, so a Python without the module says so in a sentence rather than an `ImportError` traceback.
+    """
+    try:
+        from . import tui_curses
+    except ImportError as exc:
+        raise TicketError(
+            f"`ticket tui` needs the curses module, which this Python does not "
+            f"have ({exc}). Every other verb works without it."
+        ) from exc
+
+    return tui_curses.run()
+
+
 def cmd_log(args) -> int:
     """A step's recorded log, or a sentence saying why there is not one."""
     ctx = Context.load(no_sync=True)
@@ -1302,6 +1308,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("log", cmd_log, help="what a step's last run wrote")
     p.add_argument("key")
     p.add_argument("step")
+
+    add("tui", cmd_tui, help="the queue as a screen that stays put")
 
     p = add("stages", cmd_stages, help="the steps and reviews config declares")
     p.add_argument(

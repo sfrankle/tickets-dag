@@ -537,7 +537,7 @@ def _load_fix(raw: dict, default_model: str, models: dict) -> Fix:
 def _load_key_pattern(raw) -> str | None:
     """Optional house style for ticket keys, e.g. `^[A-Z]+-[0-9]+$`.
 
-    The engine's own check is a path-safety one (see `cli.is_safe_key`); this
+    The engine's own check is a path-safety one (see `store.is_safe_key`); this
     is the stricter, entirely local opinion a shop with one tracker can add.
     """
     if raw is None:
