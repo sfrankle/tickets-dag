@@ -66,6 +66,7 @@ ticket reset ABC-123 implement    # re-run a step and everything below it
 ticket log ABC-123 implement      # what that step's last run wrote
 ticket open ABC-123               # the PR in a browser (--pr for an older one)
 ticket unlock ABC-123             # clear a lock a dead run left behind
+ticket tui                        # the queue as a screen that stays put
 ticket stages --list              # the steps and reviews this config declares
 ticket config                     # the resolved config
 ticket config --validate          # ...and whether it actually works
@@ -132,6 +133,75 @@ Every one of those still writes the row and exits 0, because a ticket with no re
 Inference never overwrites a repo already recorded, so re-tracking cannot move a ticket someone pointed by hand.
 
 `--repo` takes an alias or a bare name as well as `owner/repo`, and means the same thing to every verb that accepts it.
+
+## The screen
+
+`ticket tui` is the queue as a screen that stays put and stays current (issue #28).
+It exists for the four things the printed queue and `ticket ABC-123` cannot do: stop retyping the key into every verb, switch between tickets without re-running a command, start a step and keep working, and keep the view on screen instead of watching it scroll away.
+
+```
++- tickets ------------------+- ABC-123  acme/api ----------------+
+|                            | Fix auth token expiry              |
+| >ABC-123 * Fix auth token  | PR: acme/api#115    2 open findings |
+|  ABC-140   Rate limit gate |                                    |
+|  ABC-155   Migrate store l | [x] evaluate      handoff          |
+|                            | [x] review-spec   gate    released |
+|                            | [>] implement     handoff running  |
+|                            | [ ] draft-pr      script           |
+|                            |                                    |
+|                            | next: step implement               |
+|                            +- log  implement-2026...Z.log ------+
+|                            | > opening worktree acme/api        |
++----------------------------+------------------------------------+
+ ENTER run implement    f 2 findings    o PR #115
+ ready  ·  last sync 4m ago  ·  ? help
+```
+
+Left list, right detail, log below the detail.
+The list is the queue, one line per ticket, scrolling as a viewport under the cursor so the selection is always visible.
+The panel is 32% of the terminal clamped to 24-44 columns, so it grows with the terminal and never with the length of the titles in it; truncation is a stable prefix rather than an ellipsis that moves, and the full summary is always in the detail pane.
+A row with no summary shows the repo instead, and a row with neither is just the key.
+
+The right pane is `ticket KEY` plus running state, with steps and reviews in one pipeline in config order, since that is how the resolver walks them.
+Each row shows a marker and **the word the store holds** — `released`, `skipped`, `failed`, `collected` — never a display vocabulary invented for the screen, which would drift from the engine's.
+The log pane appears when the selected ticket is running or has a last run, auto-tails while running, and collapses with `L`.
+
+**A key is the first letter of the CLI verb it calls**, so there is nothing new to learn.
+
+```
+ENTER  next        run whatever the resolver says is next
+o      open        the PR
+t      track       a new key
+f      findings    for this ticket
+R      refresh     network, hence the capital
+p                  cycle which PR the detail pane inspects
+w                  collapse the list to keys only
+Tab                focus (or detail, when narrow)
+/                  fuzzy search over key, repo and summary
+b                  show only tickets that want attention
+L                  collapse the log pane
+j k ? q
+```
+
+`ENTER` rather than `n`, because `n` reads as "new" everywhere.
+Safety comes from the contextual line always naming what `ENTER` will do before it is pressed: `ENTER run implement`, `ENTER dispatch correctness`, `ENTER collect`, `ENTER fix f03`.
+At a gate `ENTER` does nothing and that line shows the literal command to copy, `ticket release ABC-123 review-spec`; releasing a gate from the screen is deliberately not here.
+`b` is the only filter, and it is "does this want me now" rather than ready/blocked — those words do not survive contact with the resolver, since `collect` sounds blocked and is runnable while a gate sounds ready and is the actual stop.
+
+**The TUI is a frontend.**
+It never writes to the store.
+Every mutation is a subprocess call to `ticket` itself, spawned with `start_new_session=True` so a twenty-minute handoff outlives the screen and survives the terminal closing, and the child takes `store.lock(key)` on its own — so mutual exclusion stays the engine's and there is never a second writer.
+The child's output goes to `tickets/<KEY>/logs/spawn-<stamp>.err`, which is where an immediate crash announces itself.
+Failure is read back from the store rather than from an exit code: the step records `failed`, the resolver returns it as next, and `ENTER` re-runs it with no special case.
+
+One 1s timer polls mtimes across the store, and a tick that finds nothing changed does no work.
+The network is touched by `R` alone.
+
+Under 90 columns it is one pane at a time — list, `Tab` for detail, `Esc` back.
+Under 20 rows the log pane does not auto-open.
+Nothing ever scrolls horizontally, and everything survives 80x24.
+
+`ticket tui` needs a terminal curses can drive; piped or under CI it says so and names `ticket show` and `ticket next` instead.
 
 ## Checking a config
 
