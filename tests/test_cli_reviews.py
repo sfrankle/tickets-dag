@@ -176,6 +176,47 @@ def test_decide_closes_a_finding(env, fake_bin, capsys):
     assert "wontfix" in capsys.readouterr().out
 
 
+def test_resolve_closes_a_finding_by_hand(env, fake_bin, capsys):
+    started(fake_bin)
+    main(["review", "ABC-123"])
+    fake_bin.respond(
+        "gh api repos/acme/api/pulls/115/reviews",
+        stdout=json.dumps(
+            [
+                {
+                    "id": "PRR_1",
+                    "user": {"login": "claude"},
+                    "body": (FIXTURES / "example-review.md").read_text(),
+                    "submitted_at": "t",
+                }
+            ]
+        ),
+    )
+    fake_bin.respond("claude", stdout=json.dumps(["easy", "hard", "easy"]))
+    main(["collect", "ABC-123"])
+    capsys.readouterr()
+    assert main(["resolve", "ABC-123", "f01", "--commit", "a1b2c3d"]) == 0
+    assert "f01: resolved" in capsys.readouterr().out
+    main(["findings", "ABC-123", "--json"])
+    finding = json.loads(capsys.readouterr().out)[0]
+    assert finding["id"] == "f01"
+    assert (finding["status"], finding["commit"]) == ("resolved", "a1b2c3d")
+
+
+def test_a_dry_run_resolve_refuses_what_the_real_run_would(env, fake_bin, capsys):
+    """A dry run that says yes to a finding the real run then refuses has answered the wrong question."""
+    started(fake_bin)
+    _seed_findings(env, _easy("first"))
+    capsys.readouterr()
+    assert main(["resolve", "ABC-123", "f09", "--dry-run"]) == 1
+    assert "no finding f09" in capsys.readouterr().err
+
+    assert main(["resolve", "ABC-123", "f01"]) == 0
+    capsys.readouterr()
+    assert main(["resolve", "ABC-123", "f01", "--dry-run"]) == 1
+    assert "already resolved" in capsys.readouterr().err
+
+
 def test_effort_overrides(env, fake_bin, capsys):
     started(fake_bin)
     main(["review", "ABC-123"])

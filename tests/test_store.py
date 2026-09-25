@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import UTC, date, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -294,6 +295,56 @@ def test_reading_a_missing_log_says_so_instead_of_raising(store):
 
 def test_reading_an_unrecorded_log_says_so(store):
     assert "no log" in store.read_log(None)
+
+
+def write_run(store, name, text="x"):
+    path = store.ticket_dir("ABC-123") / "logs" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_a_days_runs_come_back_in_the_order_they_started(store):
+    write_run(store, "review-spec-20260925T101500Z.log")
+    write_run(store, "implement-20260925T090000Z.log")
+    write_run(store, "implement-20260925T090000Z-2.log")
+    runs = store.day_logs("ABC-123", date(2026, 9, 25), tz=UTC)
+    assert [(run.step, run.path.name) for run in runs] == [
+        ("implement", "implement-20260925T090000Z.log"),
+        ("implement", "implement-20260925T090000Z-2.log"),
+        ("review-spec", "review-spec-20260925T101500Z.log"),
+    ]
+
+
+def test_a_day_is_the_readers_day_not_utcs(store):
+    # 23:30 UTC on the 24th is already the 25th two hours east.
+    write_run(store, "implement-20260924T233000Z.log")
+    east = timezone(timedelta(hours=2))
+    assert store.day_logs("ABC-123", date(2026, 9, 24), tz=UTC)
+    assert not store.day_logs("ABC-123", date(2026, 9, 24), tz=east)
+    [run] = store.day_logs("ABC-123", date(2026, 9, 25), tz=east)
+    assert run.started.hour == 1
+
+
+def test_other_days_are_left_out(store):
+    write_run(store, "implement-20260924T090000Z.log")
+    assert store.day_logs("ABC-123", date(2026, 9, 25), tz=UTC) == []
+
+
+def test_an_empty_spawn_file_is_left_out_but_one_that_says_something_is_kept(store):
+    write_run(store, "spawn-20260925T090000Z.err", "")
+    write_run(store, "spawn-20260925T100000Z.err", "Traceback")
+    runs = store.day_logs("ABC-123", date(2026, 9, 25), tz=UTC)
+    assert [run.path.name for run in runs] == ["spawn-20260925T100000Z.err"]
+
+
+def test_a_file_that_is_not_a_run_is_ignored(store):
+    write_run(store, "notes.txt")
+    assert store.day_logs("ABC-123", date(2026, 9, 25), tz=UTC) == []
+
+
+def test_a_ticket_with_no_logs_has_no_runs(store):
+    assert store.day_logs("ABC-123", date(2026, 9, 25), tz=UTC) == []
 
 
 # --- migration ------------------------------------------------------------

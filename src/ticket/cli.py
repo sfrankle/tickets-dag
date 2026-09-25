@@ -20,6 +20,7 @@ import os
 import re
 import signal
 import sys
+from datetime import date
 
 from . import collect as collect_module
 from . import fix as fix_module
@@ -55,6 +56,7 @@ WRITE_VERBS = {
     "collect",
     "fix",
     "decide",
+    "resolve",
     "effort",
     "attribute",
     "reset",
@@ -668,6 +670,21 @@ def cmd_decide(args) -> int:
     return 0
 
 
+def cmd_resolve(args) -> int:
+    ctx = Context.load(no_sync=getattr(args, "no_sync", False))
+    ticket = load_ticket(ctx, args.key)
+    pr_ref = pick_pr(ctx, ticket, args)
+    if args.dry_run:
+        fix_module.check_resolve(ctx.store, pr_ref, args.finding)
+        print(f"[dry-run] would close {args.finding} as resolved")
+        return 0
+    fix_module.resolve(
+        ctx.store, pr_ref, args.finding, commit=args.commit, note=args.note
+    )
+    print(f"{args.finding}: resolved by hand")
+    return 0
+
+
 def cmd_effort(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     ticket = load_ticket(ctx, args.key)
@@ -1068,14 +1085,44 @@ def cmd_tui(args) -> int:
 
 
 def cmd_log(args) -> int:
-    """A step's recorded log, or a sentence saying why there is not one."""
+    """A step's recorded log, or with no step, every run of one day (#27)."""
     ctx = Context.load(no_sync=True)
     ticket = load_ticket(ctx, args.key)
+    if args.step is None:
+        return _print_day(ctx, ticket["key"], args.day or date.today())
+    if args.day is not None:
+        raise TicketError(
+            "--day reads every run of that day, so it takes no step: "
+            f"ticket log {ticket['key']} --day {args.day.isoformat()}"
+        )
     inner = scoped(ctx, ticket)
     inner.cfg.step(args.step)  # a name config does not declare is an error
     record = (ticket.get("steps") or {}).get(args.step) or {}
     print(ctx.store.read_log(record.get("log")))
     return 0
+
+
+def _print_day(ctx: Context, key: str, day: date) -> int:
+    runs = ctx.store.day_logs(key, day)
+    if not runs:
+        print(f"no runs for {key} on {day.isoformat()}")
+        return 0
+    for index, run in enumerate(runs):
+        if index:
+            print()
+        print(f"== {run.started:%H:%M:%S}  {run.step} ==")
+        text = run.path.read_text(errors="replace")
+        print(text.rstrip("\n") if text.strip() else "(empty)")
+    return 0
+
+
+def _day(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a day: use YYYY-MM-DD"
+        ) from None
 
 
 # --- parser ---------------------------------------------------------------
@@ -1094,6 +1141,7 @@ STAGE_VERBS = (
     "collect",
     "fix",
     "decide",
+    "resolve",
     "effort",
     "attribute",
     "findings",
@@ -1237,6 +1285,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pr")
     p.add_argument("--dry-run", action="store_true")
 
+    p = add("resolve", cmd_resolve, help="close a finding as fixed, by hand")
+    p.add_argument("key")
+    p.add_argument("finding")
+    p.add_argument("--commit", help="the commit that fixed it, if there is one")
+    p.add_argument("--note", help="why it counts as fixed")
+    p.add_argument("--pr")
+    p.add_argument("--dry-run", action="store_true")
+
     p = add("effort", cmd_effort, help="override a finding's effort")
     p.add_argument("key")
     p.add_argument("finding")
@@ -1282,9 +1338,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
 
-    p = add("log", cmd_log, help="what a step's last run wrote")
+    p = add(
+        "log", cmd_log, help="what a step's last run wrote, or with no step, a day's"
+    )
     p.add_argument("key")
-    p.add_argument("step")
+    p.add_argument("step", nargs="?")
+    p.add_argument(
+        "--day", type=_day, help="with no step: which day to read (default today)"
+    )
 
     add("tui", cmd_tui, help="the queue as a screen that stays put")
 
