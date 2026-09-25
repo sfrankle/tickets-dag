@@ -950,6 +950,10 @@ def config_problems(cfg: Config) -> list[str]:
         check("fix.easy", "run", cfg.fix.easy_run, executable=True)
     if cfg.fix.hard_prompt:
         check("fix.hard", "prompt", cfg.fix.hard_prompt)
+    # `refresh:` entries are scripts the config ships, like a step's `run:`, and a missing one breaks the morning refresh rather than any one ticket.
+    for name, runs in (("queue", cfg.refresh.queue), ("ticket", cfg.refresh.ticket)):
+        for run in runs:
+            check(f"refresh.{name}", "run", run, executable=True)
     return problems
 
 

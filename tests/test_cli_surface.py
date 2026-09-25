@@ -396,6 +396,17 @@ def test_config_validate_reports_an_unknown_key(tracked, capsys):
     assert "sumary" in out
 
 
+def test_validate_reports_a_refresh_script_that_is_not_there(env, capsys):
+    config = env / "config.yml"
+    config.write_text(
+        config.read_text() + "refresh:\n  ticket:\n    - run: scripts/nope.sh\n"
+    )
+    assert main(["config", "--validate"]) == 1
+    assert (
+        "refresh.ticket: run scripts/nope.sh is not a file" in capsys.readouterr().out
+    )
+
+
 # --- reading a step's log -------------------------------------------------
 
 

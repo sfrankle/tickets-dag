@@ -801,3 +801,49 @@ def test_an_empty_alias_is_an_error(tmp_path):
     broken = INFER.replace("aliases: [CSM]", 'aliases: [CSM, "  "]')
     with pytest.raises(ConfigError, match="aliases"):
         load_config(write(tmp_path, broken))
+
+
+# --- refresh: -------------------------------------------------------------
+
+
+REFRESH = textwrap.dedent("""\
+    refresh:
+      queue:
+        - run: scripts/bulk.sh
+      ticket:
+        - run: scripts/find-worktree.sh
+        - run: scripts/find-pr.sh
+""")
+
+
+def test_refresh_lists_load_in_order(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE + REFRESH))
+    assert cfg.refresh.queue == ("scripts/bulk.sh",)
+    assert cfg.refresh.ticket == ("scripts/find-worktree.sh", "scripts/find-pr.sh")
+
+
+def test_no_refresh_block_is_no_entries(tmp_path):
+    cfg = load_config(write(tmp_path, SAMPLE))
+    assert cfg.refresh.queue == ()
+    assert cfg.refresh.ticket == ()
+
+
+@pytest.mark.parametrize("block", ["refresh:\n", "refresh:\n  ticket: []\n"])
+def test_an_empty_refresh_block_is_no_entries(tmp_path, block):
+    cfg = load_config(write(tmp_path, SAMPLE + block))
+    assert cfg.refresh.ticket == ()
+
+
+@pytest.mark.parametrize(
+    ("block", "match"),
+    [
+        ("refresh:\n  tickets: []\n", "unknown key under refresh:: tickets"),
+        ("refresh:\n  ticket:\n    - prompt: p.md\n", r"refresh.ticket\[0\]"),
+        ("refresh:\n  ticket:\n    - {}\n", "needs run:"),
+        ("refresh:\n  ticket: scripts/a.sh\n", "must be a list"),
+        ("refresh: [scripts/a.sh]\n", "must be a mapping"),
+    ],
+)
+def test_a_malformed_refresh_block_fails_at_load(tmp_path, block, match):
+    with pytest.raises(ConfigError, match=match):
+        load_config(write(tmp_path, SAMPLE + block))

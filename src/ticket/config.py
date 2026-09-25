@@ -30,6 +30,7 @@ TOP_LEVEL_KEYS = {
     "defaults",
     "sync",
     "tracker",
+    "refresh",
     "key_pattern",
     "severities",
     "worktrees",
@@ -44,6 +45,8 @@ TOP_LEVEL_KEYS = {
 DEFAULTS_KEYS = {"model"}
 WORKTREES_KEYS = {"enabled", "root", "branch"}
 TRACKER_KEYS = {"summary"}
+REFRESH_KEYS = {"queue", "ticket"}
+REFRESH_ENTRY_KEYS = {"run"}
 FIX_KEYS = {"model", "args", "easy", "hard"}
 FIX_EASY_KEYS = {"run"}
 FIX_HARD_KEYS = {"model", "args", "prompt"}
@@ -170,6 +173,19 @@ class Fix:
 
 
 @dataclass(frozen=True)
+class Refresh:
+    """What `ticket refresh` runs besides its own catch-up (#8).
+
+    `queue` runs once per `ticket refresh` with no key, before any ticket; `ticket` runs for each ticket, in order, after the built-in part.
+    Not steps, by the same argument as decision 28: nothing here is in the DAG, records a status or has `needs:`, and every entry re-runs on every refresh.
+    Each item is a `run:` path exactly as the config wrote it, resolved with `Config.path_to` when it runs.
+    """
+
+    queue: tuple[str, ...] = ()
+    ticket: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ParseSource:
     """One author's override of the built-in finding grammar.
 
@@ -248,6 +264,7 @@ class Config:
     severities: tuple[Severity, ...]
     fix: Fix = Fix()
     tracker: Tracker = Tracker()
+    refresh: Refresh = Refresh()
     key_pattern: str | None = None
     parse_sources: tuple[ParseSource, ...] = ()
     owner: str | None = None
@@ -827,6 +844,35 @@ def _load_tracker(raw) -> Tracker:
     return Tracker(summary=tuple(str(part) for part in summary))
 
 
+def _load_refresh(raw) -> Refresh:
+    if not raw:
+        return Refresh()
+    if not isinstance(raw, dict):
+        raise ConfigError("refresh: must be a mapping with queue: and/or ticket:")
+    _reject_unknown("refresh:", raw, REFRESH_KEYS)
+    return Refresh(
+        queue=_refresh_entries("queue", raw.get("queue")),
+        ticket=_refresh_entries("ticket", raw.get("ticket")),
+    )
+
+
+def _refresh_entries(name: str, raw) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError(f"refresh.{name}: must be a list of entries, each with run:")
+    runs = []
+    for index, entry in enumerate(raw):
+        where = f"refresh.{name}[{index}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where}: must be a mapping with run:")
+        _reject_unknown(where, entry, REFRESH_ENTRY_KEYS)
+        if not entry.get("run"):
+            raise ConfigError(f"{where}: needs run: — the script to run")
+        runs.append(str(entry["run"]))
+    return tuple(runs)
+
+
 def load_config(path: Path | None = None) -> Config:
     path = (path or config_path()).expanduser()
     if not path.is_file():
@@ -885,6 +931,7 @@ def load_config(path: Path | None = None) -> Config:
         severities=_load_severities(raw.get("severities")),
         fix=_load_fix(raw.get("fix") or {}, default_model, models),
         tracker=_load_tracker(raw.get("tracker")),
+        refresh=_load_refresh(raw.get("refresh")),
         key_pattern=_load_key_pattern(raw.get("key_pattern")),
         parse_sources=_load_parse_sources(raw.get("parse")),
         owner=_load_owner(raw.get("owner")),
