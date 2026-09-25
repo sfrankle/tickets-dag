@@ -428,6 +428,40 @@ def test_log_rejects_a_step_config_does_not_declare(tracked, capsys):
     assert "unknown step" in capsys.readouterr().err
 
 
+def test_log_with_no_step_prints_every_run_of_the_day(tracked, capsys, fake_bin):
+    fake_bin.respond("claude", stdout="evaluated the ticket")
+    main(["run", "ABC-123", "evaluate"])
+    main(["run", "ABC-123", "draft-pr"])
+    capsys.readouterr()
+    assert main(["log", "ABC-123"]) == 0
+    out = capsys.readouterr().out
+    assert "evaluated the ticket" in out
+    assert out.index(" evaluate ==") < out.index(" draft-pr ==")
+
+
+def test_log_reads_another_day(tracked, capsys):
+    logs = Store(tracked / "store").ticket_dir("ABC-123") / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "evaluate-20260101T120000Z.log").write_text("new year")
+    assert main(["log", "ABC-123", "--day", "2026-01-01"]) == 0
+    assert "new year" in capsys.readouterr().out
+
+
+def test_log_says_so_when_a_day_has_no_runs(tracked, capsys):
+    assert main(["log", "ABC-123", "--day", "2026-01-01"]) == 0
+    assert "no runs for ABC-123 on 2026-01-01" in capsys.readouterr().out
+
+
+def test_log_refuses_a_day_that_is_not_a_date(tracked, capsys):
+    assert main(["log", "ABC-123", "--day", "yesterday"]) == 2
+    assert "YYYY-MM-DD" in capsys.readouterr().err
+
+
+def test_log_refuses_a_step_and_a_day_together(tracked, capsys):
+    assert main(["log", "ABC-123", "evaluate", "--day", "2026-01-01"]) == 1
+    assert "--day" in capsys.readouterr().err
+
+
 # --- clearing a lock a dead run left behind (issue #27) --------------------
 
 

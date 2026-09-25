@@ -64,6 +64,7 @@ ticket next ABC-123               # run whatever the resolver says is next
 ticket next ABC-123 --pr 114      # ...against an older PR, from here on
 ticket reset ABC-123 implement    # re-run a step and everything below it
 ticket log ABC-123 implement      # what that step's last run wrote
+ticket log ABC-123                # every run today, oldest first (--day 2026-09-24 for another)
 ticket open ABC-123               # the PR in a browser (--pr for an older one)
 ticket unlock ABC-123             # clear a lock a dead run left behind
 ticket tui                        # the queue as a screen that stays put
@@ -86,6 +87,7 @@ ticket fix ABC-123 --no-wait      # hand it off without waiting for the commit
 ticket effort ABC-123 f02 hard    # override how a finding gets fixed
 ticket attribute ABC-123 5049842015 docs-tests   # say which dispatch a source answered
 ticket decide ABC-123 f03 "covered by ABC-140"
+ticket resolve ABC-123 f04 --commit a1b2c3d   # fixed, though no trailer says so
 ticket --no-sync collect ABC-123  # skip the fetch, for working offline
 ```
 
@@ -351,6 +353,8 @@ A bare key is shorthand for `show`, and a verb always wins that ambiguity — `t
 Resolution is a `git log` scan for `Finding: <ref>` trailers — one commit per finding, zero tokens, and it works for a remote fixer's commits too.
 The ref is a hash of the PR reference and the finding id, not the id: ids are minted per PR and restart at `f01`, so scanning a branch for `Finding: f01` used to match an unrelated PR's commit and close a finding nobody had fixed.
 It also keeps a store-local handle out of a public comment.
+When a fix lands without a trailer — a squash that dropped it, or another change that happened to cover the finding — `ticket resolve` closes it by hand, with an optional `--commit` and `--note`, and records `by: hand` so it is clear the scan did not close it.
+It turns a wontfix into a fix, but refuses a finding already resolved, so it never overwrites the commit the scan recorded.
 
 **Trust boundary.** Findings are minted from PR reviews and PR comments, so their text is written by whoever can comment on the PR.
 That text is passed to whatever `fix.easy.run` names — the example script splices it into an `/edit` instruction for the gh bot — and into the prompt of the local Claude session that a `hard` fix runs, after which this commits whatever the session changed.

@@ -357,6 +357,34 @@ def decide(store: Store, pr_ref: str, finding_id: str, reason: str) -> None:
     store.write_findings(doc)
 
 
+def resolve(
+    store: Store,
+    pr_ref: str,
+    finding_id: str,
+    *,
+    commit: str | None = None,
+    note: str | None = None,
+) -> None:
+    """Close a finding as fixed, on a person's word rather than a trailer (#27).
+
+    The trailer scan stays the normal route (decision 9); this is for a fix it cannot see, like a squash that dropped the trailer or a finding another change happened to cover.
+    A wontfix can become resolved, since that is someone changing their mind, but a finding already resolved is refused so the commit the scan recorded is not overwritten.
+    """
+    doc = store.read_findings(pr_ref)
+    finding = _find(doc, finding_id)
+    if finding.get("status") == "resolved":
+        raise TicketError(f"{finding_id} is already resolved")
+    finding["status"] = "resolved"
+    finding["by"] = "hand"
+    # A wontfix's reason explains a decision that no longer stands.
+    finding.pop("reason", None)
+    if commit:
+        finding["commit"] = commit
+    if note:
+        finding["reason"] = note
+    store.write_findings(doc)
+
+
 def set_effort(store: Store, pr_ref: str, finding_id: str, value: str) -> None:
     if value not in EFFORTS:
         raise TicketError(f"effort must be one of {', '.join(EFFORTS)}")

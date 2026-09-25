@@ -11,6 +11,7 @@ from ticket.fix import (
     finding_env,
     finding_ref,
     fix_one,
+    resolve,
     resolve_from_git,
     scan_trailers,
     set_effort,
@@ -452,6 +453,49 @@ def test_decide_closes_a_finding_with_a_reason(cfg, store):
     finding = store.read_findings("acme/api#115")["findings"][0]
     assert finding["status"] == "wontfix"
     assert finding["reason"] == "covered by ABC-140"
+
+
+def test_resolve_closes_a_finding_by_hand(cfg, store):
+    seed(store, {"summary": "a", "effort": "easy"})
+    resolve(
+        store, "acme/api#115", "f01", commit="a1b2c3d", note="fixed in the refactor"
+    )
+    finding = store.read_findings("acme/api#115")["findings"][0]
+    assert finding["status"] == "resolved"
+    assert finding["by"] == "hand"
+    assert finding["commit"] == "a1b2c3d"
+    assert finding["reason"] == "fixed in the refactor"
+
+
+def test_resolve_needs_neither_a_commit_nor_a_note(cfg, store):
+    seed(store, {"summary": "a", "effort": "easy"})
+    resolve(store, "acme/api#115", "f01")
+    finding = store.read_findings("acme/api#115")["findings"][0]
+    assert finding["status"] == "resolved"
+    assert "commit" not in finding
+
+
+def test_resolve_turns_a_wontfix_into_a_fix_and_drops_its_reason(cfg, store):
+    seed(store, {"summary": "a", "effort": "easy"})
+    decide(store, "acme/api#115", "f01", "covered by ABC-140")
+    resolve(store, "acme/api#115", "f01")
+    finding = store.read_findings("acme/api#115")["findings"][0]
+    assert finding["status"] == "resolved"
+    assert "reason" not in finding
+
+
+def test_resolve_refuses_a_finding_already_resolved(cfg, store):
+    seed(store, {"summary": "a", "effort": "easy"})
+    resolve(store, "acme/api#115", "f01", commit="a1b2c3d")
+    with pytest.raises(TicketError, match="already resolved"):
+        resolve(store, "acme/api#115", "f01", commit="ffff")
+    assert store.read_findings("acme/api#115")["findings"][0]["commit"] == "a1b2c3d"
+
+
+def test_resolve_refuses_an_unknown_finding(cfg, store):
+    seed(store, {"summary": "a", "effort": "easy"})
+    with pytest.raises(TicketError, match="no finding f09"):
+        resolve(store, "acme/api#115", "f09")
 
 
 def test_set_effort_overrides(cfg, store):

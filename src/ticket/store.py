@@ -27,7 +27,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path, PurePosixPath
 
 from .errors import StoreError
@@ -40,6 +40,20 @@ Nothing writes a `state.json` there, so it never shows up as a ticket; a later r
 # segment. Shape is left to `key_pattern:` in config — tickets come from Jira,
 # Linear, GitHub issues or nothing at all.
 UNSAFE_KEY_RE = re.compile(r"[\s/\\]")
+
+# The name `_fresh_file` gives a run's file: `<step>-<stamp>[-<attempt>].<log|err>`.
+RUN_FILE_RE = re.compile(
+    r"^(?P<step>.+)-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<attempt>\d+))?\.(?:log|err)$"
+)
+
+
+@dataclass(frozen=True)
+class Run:
+    """One run's file under a ticket's `logs/`, as the per-day reading sees it."""
+
+    started: datetime
+    step: str
+    path: Path
 
 
 def is_safe_key(key: str) -> bool:
@@ -215,6 +229,36 @@ class Store:
         if self.log_missing(recorded):
             return f"no log file at {path}: it was moved, renamed or deleted"
         return path.read_text()
+
+    def day_logs(self, key: str, day: date, tz: tzinfo | None = None) -> list[Run]:
+        """Every run of a ticket that started on `day`, oldest first (#27).
+
+        The files stay one per run, as `log_path` writes them; this is only a reading over them, so a day's work can be read in one place.
+        The day is the reader's (`tz`, local by default), not UTC's, since a run just after midnight belongs to the day it was started in.
+        An empty `spawn` file is the normal case, a child that started cleanly, so it is left out rather than printed as a blank run.
+        """
+        directory = self.ticket_dir(key) / "logs"
+        if not directory.is_dir():
+            return []
+        found = []
+        for path in directory.iterdir():
+            match = RUN_FILE_RE.match(path.name)
+            if not match or not path.is_file():
+                continue
+            if path.suffix == ".err" and path.stat().st_size == 0:
+                continue
+            started = (
+                datetime.strptime(match["stamp"], "%Y%m%dT%H%M%SZ")
+                .replace(tzinfo=UTC)
+                .astimezone(tz)
+            )
+            if started.date() != day:
+                continue
+            # Two steps can start in the same second; the one that finished
+            # writing first is the one that ran first.
+            order = (started, int(match["attempt"] or 1), path.stat().st_mtime_ns)
+            found.append((order, Run(started, match["step"], path)))
+        return [run for _, run in sorted(found, key=lambda pair: pair[0])]
 
     # --- io ------------------------------------------------------------
 
