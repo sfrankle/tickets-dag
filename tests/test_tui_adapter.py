@@ -4,6 +4,7 @@ Nothing here drives curses.
 The adapter is a terminal, a clock, a stat and a `Popen`, and the only parts worth pinning are the ones that would go wrong silently: a run started with the wrong interpreter or in the TUI's own session, and a lock left behind by a run that died.
 """
 
+import curses
 import subprocess
 import sys
 import textwrap
@@ -213,3 +214,61 @@ def test_a_spawn_that_crashed_keeps_what_it_said(tracked, popen):
     tui_curses.discard_empty(err)
 
     assert err.is_file()
+
+
+# --- reading a key ----------------------------------------------------------
+
+
+class WideScreen:
+    """A curses window from a build linked against `ncursesw`."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def get_wch(self):
+        if self.key is None:
+            raise curses.error("no input")
+        return self.key
+
+
+class NarrowScreen:
+    """A curses window from a build without wide-character input, which is what the python.org macOS framework ships."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def getch(self):
+        return -1 if self.key is None else self.key
+
+
+@pytest.fixture
+def keyname(monkeypatch):
+    """`curses.keyname` needs a live screen, which a test does not have, so stand in the spellings a terminal would return."""
+    names = {curses.KEY_DOWN: b"KEY_DOWN", curses.KEY_UP: b"KEY_UP"}
+    monkeypatch.setattr(curses, "keyname", lambda code: names[code])
+
+
+def test_the_wide_build_reads_a_key_as_the_character_it_is():
+    assert tui_curses.read_key(WideScreen("q")) == "q"
+
+
+def test_the_wide_build_names_a_keypad_code(keyname):
+    assert tui_curses.read_key(WideScreen(curses.KEY_DOWN)) == "KEY_DOWN"
+
+
+def test_a_build_without_get_wch_still_reads_a_key():
+    assert tui_curses.read_key(NarrowScreen(ord("q"))) == "q"
+
+
+def test_a_build_without_get_wch_names_a_keypad_code(keyname):
+    assert tui_curses.read_key(NarrowScreen(curses.KEY_DOWN)) == "KEY_DOWN"
+
+
+@pytest.mark.parametrize("code", [ord("\n"), ord("\t"), 0x1B, 0x7F])
+def test_a_build_without_get_wch_gives_the_control_keys_the_reducer_matches_on(code):
+    assert tui_curses.read_key(NarrowScreen(code)) == chr(code)
+
+
+@pytest.mark.parametrize("screen", [WideScreen(None), NarrowScreen(None)])
+def test_the_timer_expiring_is_no_key_on_either_build(screen):
+    assert tui_curses.read_key(screen) is None
