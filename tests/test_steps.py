@@ -1,10 +1,19 @@
 import os
+import pty
+import select
+import signal
+import sys
 import textwrap
+import threading
+import time
+from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
+from ticket import steps
 from ticket.config import load_config
-from ticket.steps import release_gate, run_step, tee
+from ticket.steps import Interrupted, release_gate, run_step, tee
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -262,3 +271,232 @@ def test_a_steps_log_exists_before_the_step_finishes(cfg, store, tmp_path):
     assert (store.root / ticket["steps"]["draft-pr"]["log"]).read_text() == (
         "first\nsecond\n"
     )
+
+
+# --- stopping a step (#43) --------------------------------------------------
+
+
+@pytest.fixture
+def interrupt_after():
+    """Raise `Interrupted` in the test's own thread after a delay, the way `cli.main`'s handler does on SIGTERM."""
+
+    def arm(seconds: float) -> None:
+        signal.signal(signal.SIGALRM, steps.raise_interrupted)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+
+    previous = signal.getsignal(signal.SIGALRM)
+    yield arm
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, previous)
+
+
+def gone(pid: int, within: float = 3.0) -> bool:
+    """Whether `pid` has exited. An orphan is reaped by init, so give it a moment."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def pids(log) -> list[int]:
+    return [int(line) for line in log.read_text().split()]
+
+
+def test_stopping_tee_stops_the_child_and_what_it_started(
+    cfg, tmp_path, interrupt_after
+):
+    """The reported case: `ticket` ended and the `claude` child ran on, reparented to init."""
+    log = tmp_path / "run.log"
+    # The step's own pid, then a grandchild's, then it waits on the grandchild.
+    script = write_script(cfg, "forks.sh", "echo $$\nsleep 60 &\necho $!\nwait\n")
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        tee([str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log)
+    child, grandchild = pids(log)
+    assert gone(child)
+    assert gone(grandchild), "the grandchild outlived the step"
+
+
+def test_a_child_that_ignores_sigterm_is_killed(
+    cfg, tmp_path, interrupt_after, monkeypatch
+):
+    monkeypatch.setattr(steps, "GRACE_SECONDS", 0.2)
+    log = tmp_path / "run.log"
+    script = write_script(
+        cfg, "stubborn.sh", "trap '' TERM\necho $$\nwhile :; do sleep 0.05; done\n"
+    )
+    interrupt_after(0.5)
+    started = time.monotonic()
+    with pytest.raises(Interrupted):
+        tee([str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log)
+    assert time.monotonic() - started < 5
+    assert gone(pids(log)[0])
+
+
+def test_an_interrupted_step_is_recorded_with_what_it_printed(
+    cfg, store, interrupt_after
+):
+    """Not left looking like it never ran, and re-runnable by `next` like any failure."""
+    write_script(cfg, "draft-pr.sh", "echo first\nsleep 60\n")
+    ticket = ticket_doc()
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    record = store.read_ticket("ABC-123")["steps"]["draft-pr"]
+    assert record["status"] == "failed"
+    assert record["interrupted"] is True
+    assert (store.root / record["log"]).read_text() == "first\n"
+
+
+@pytest.fixture
+def sigterm_at():
+    """Send this process SIGTERM at each delay, with the handler `cli.main` installs."""
+    timers: list[threading.Timer] = []
+
+    def arm(*seconds: float) -> None:
+        for delay in seconds:
+            timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGTERM))
+            timers.append(timer)
+            timer.start()
+
+    previous = signal.signal(signal.SIGTERM, steps.raise_interrupted)
+    yield arm
+    for timer in timers:
+        timer.cancel()
+    signal.signal(signal.SIGTERM, previous)
+
+
+def test_a_second_signal_during_the_grace_wait_does_not_skip_the_kill(
+    cfg, tmp_path, sigterm_at, monkeypatch
+):
+    """An impatient second request to stop raised out of the wait, and a step that ignores SIGTERM ran on."""
+    monkeypatch.setattr(steps, "GRACE_SECONDS", 1.0)
+    log = tmp_path / "run.log"
+    script = write_script(
+        cfg, "stubborn.sh", "trap '' TERM\necho $$\nwhile :; do sleep 0.05; done\n"
+    )
+    sigterm_at(0.5, 1.0)
+    with pytest.raises(Interrupted):
+        tee([str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log)
+    assert gone(pids(log)[0]), "the step outlived a second SIGTERM"
+
+
+def test_a_signal_while_the_prompt_is_written_stops_the_child(
+    cfg, tmp_path, interrupt_after
+):
+    """A prompt larger than the pipe blocks the write until the child reads it, and a signal then used to skip the stop."""
+    pidfile = tmp_path / "pid"
+    script = write_script(cfg, "deaf.sh", f"echo $$ > {pidfile}\nsleep 60\n")
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        tee(
+            [str(script)],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            stdin_text="x" * (1 << 20),
+        )
+    assert gone(pids(pidfile)[0]), "the step outlived the interrupted write"
+
+
+def test_a_pr_announced_before_the_step_was_stopped_is_registered(
+    cfg, store, interrupt_after
+):
+    """The PR is open whether or not the step finished, and a rerun that did not know would open a second."""
+    write_script(cfg, "draft-pr.sh", "echo 'ticket-pr: acme/api#7'\nsleep 60\n")
+    ticket = ticket_doc()
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    stored = store.read_ticket("ABC-123")
+    assert stored["prs"] == ["acme/api#7"]
+    assert stored["active"] == "acme/api#7"
+    record = stored["steps"]["draft-pr"]
+    assert record["interrupted"] is True
+    assert record["registered_pr"] == "acme/api#7"
+
+
+# --- a step that holds the terminal -----------------------------------------
+
+SRC = Path(steps.__file__).resolve().parents[1]
+
+
+def in_a_terminal(code: str, conversation: list[tuple[bytes, bytes]]) -> str:
+    """Run `code` in a fresh Python on its own pseudo-terminal, as the foreground job.
+
+    For each (expected, reply) pair, wait until `expected` has been printed, then type `reply`. Returns everything printed.
+    """
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(sys.executable, [sys.executable, "-c", code])
+    printed = b""
+    deadline = time.monotonic() + 10
+
+    def read_until(wanted: bytes | None) -> None:
+        nonlocal printed
+        while wanted is None or wanted not in printed:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise AssertionError(
+                    f"timed out waiting for {wanted!r}; saw {printed!r}"
+                )
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 1024)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                if wanted is None:
+                    return
+                raise AssertionError(f"ended before {wanted!r}; saw {printed!r}")
+            printed += chunk
+
+    try:
+        for expected, reply in conversation:
+            read_until(expected)
+            os.write(fd, reply)
+        read_until(None)
+    finally:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        os.close(fd)
+    return printed.decode(errors="replace")
+
+
+def terminal_program(script: str) -> str:
+    return textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {str(SRC)!r})
+        from ticket.steps import tee
+        try:
+            output, code = tee(["sh", "-c", {script!r}], cwd=".", env=dict(os.environ), stdin_text=None)
+            print("exit", code)
+        except KeyboardInterrupt:
+            print("interrupted")
+        print("ticket has the terminal:", os.tcgetpgrp(0) == os.getpgrp(), flush=True)
+    """)
+
+
+def test_a_step_can_ask_for_input_at_the_terminal():
+    """An ssh passphrase or a git credential prompt: the step used to be stopped for touching the terminal, and `ticket` waited forever."""
+    program = terminal_program(
+        "printf 'passphrase? ' >/dev/tty; read answer </dev/tty; echo got $answer"
+    )
+    printed = in_a_terminal(program, [(b"passphrase? ", b"hunter2\n")])
+    assert "got hunter2" in printed
+    assert "exit 0" in printed
+    assert "ticket has the terminal: True" in printed
+
+
+def test_ctrl_c_at_a_step_that_holds_the_terminal_interrupts_ticket():
+    """Ctrl-C now reaches the step's group, and `ticket` must still hear about it."""
+    program = terminal_program("echo ready; sleep 60")
+    printed = in_a_terminal(program, [(b"ready", b"\x03")])
+    assert "interrupted" in printed
+    assert "ticket has the terminal: True" in printed

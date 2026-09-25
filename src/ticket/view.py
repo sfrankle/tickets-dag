@@ -109,6 +109,8 @@ def _steps(ctx: Context, ticket: dict) -> list[dict]:
                 "id": step.id,
                 "kind": step.kind,
                 "status": record.get("status"),
+                # A `failed` step that was stopped rather than one that broke (#43).
+                "interrupted": bool(record.get("interrupted")),
                 "log": log,
                 # A recorded path can outlive its file; say so rather than let
                 # whatever goes to read it fall over.

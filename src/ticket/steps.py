@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
-from contextlib import nullcontext
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,6 +76,129 @@ def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
     return argv, cfg.path_to(step.prompt).read_text()
 
 
+# How long a stopped step gets to exit on SIGTERM before its group is killed outright.
+GRACE_SECONDS = 5.0
+
+
+class Interrupted(BaseException):
+    """`ticket` was sent a signal whose default would end it without unwinding (#43).
+
+    A `BaseException`, like `KeyboardInterrupt`, so no `except Exception` on the way out swallows it and the lock's `finally` still runs.
+    """
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+# Signals whose default action ends the process without unwinding, which would skip the lock's `finally` and leave a running step's child orphaned (#43).
+# SIGINT is not here: Python already raises `KeyboardInterrupt` for it.
+UNWINDING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+# Every request to stop: `KeyboardInterrupt` for SIGINT, and `Interrupted` for the others while `raise_interrupted` handles them.
+STOPPING_SIGNALS = (signal.SIGINT, *UNWINDING_SIGNALS)
+
+
+def raise_interrupted(signum, _frame):
+    raise Interrupted(signum)
+
+
+@contextmanager
+def handling(signums, handler) -> Iterator[None]:
+    """Handle `signums` with `handler` for the duration, then put back what was there.
+
+    `signal.signal` is main-thread only, and elsewhere the handling is left as it was.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {signum: signal.signal(signum, handler) for signum in signums}
+    try:
+        yield
+    finally:
+        for signum, old in previous.items():
+            signal.signal(signum, old)
+
+
+def _signal_group(pgid: int, signum: int) -> None:
+    """Signal a step's group, which may already be gone.
+
+    macOS answers EPERM rather than ESRCH while the leader is an unreaped zombie.
+    """
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signum)
+
+
+def stop(process: subprocess.Popen) -> None:
+    """End `process` and everything it started, politely first.
+
+    `process` leads its own group (`tee` starts it with `process_group=0`), so the group id is its pid and a grandchild it forked goes too.
+    """
+    # Deaf to further requests to stop while this one is under way: an impatient second Ctrl-C, or a supervisor repeating its SIGTERM, would otherwise raise out of the grace wait before SIGKILL is sent, and a step that ignores SIGTERM would run on.
+    with handling(STOPPING_SIGNALS, signal.SIG_IGN):
+        _signal_group(process.pid, signal.SIGTERM)
+        # A member stopped by the terminal holds SIGTERM pending until it is continued.
+        _signal_group(process.pid, signal.SIGCONT)
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=GRACE_SECONDS)
+        # Even when the leader has exited, something it forked can still hold the group.
+        _signal_group(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def _controlling_terminal() -> int | None:
+    """A descriptor on `ticket`'s terminal when `ticket` is its foreground job, else None."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        foreground = os.tcgetpgrp(fd)
+    except OSError:
+        foreground = None
+    if foreground != os.getpgrp():
+        os.close(fd)
+        return None
+    return fd
+
+
+@contextmanager
+def _foreground(process: subprocess.Popen) -> Iterator[bool]:
+    """Hand the terminal to the step's group while it runs, the way a shell does for its foreground job.
+
+    A background group that touches the terminal is stopped by it, so an ssh passphrase or a git credential prompt would leave the step stopped and `ticket` waiting on it forever.
+    Ctrl-C then goes to the step's group rather than to `ticket`, and `tee` turns a step that died of it back into `KeyboardInterrupt`.
+    Without a terminal, or run as a background job, there is nothing to hand over.
+    Yields whether the terminal was handed over.
+    """
+    fd = _controlling_terminal()
+    if fd is None:
+        yield False
+        return
+    # While the step has the terminal, `ticket` is the background job: taking the terminal back, or echoing the step's output under `stty tostop`, would send it SIGTTOU and stop it.
+    # Blocked, both just happen.
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTTOU})
+    handed = False
+    try:
+        # The group is gone if the step has already exited, and there is nothing to hand over.
+        with suppress(OSError):
+            os.tcsetpgrp(fd, process.pid)
+            handed = True
+        # It may have reached for the terminal before it was given it, and been stopped for that.
+        _signal_group(process.pid, signal.SIGCONT)
+        yield handed
+    finally:
+        # The terminal may have hung up, and then there is nothing to take back.
+        with suppress(OSError):
+            os.tcsetpgrp(fd, os.getpgrp())
+        os.close(fd)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+# Exit statuses that mean the step ended because Ctrl-C reached it: killed by SIGINT, or exiting 128 + SIGINT as a shell reports that.
+INTERRUPTED_EXITS = (-signal.SIGINT, 128 + signal.SIGINT)
+
+
 def tee(
     argv: list[str],
     *,
@@ -87,6 +213,10 @@ def tee(
     end is the wrong experience for the one step a human actually watches, and a
     log written only after the process exits leaves nothing behind for a run
     that is killed or dies with its terminal (issue #27).
+
+    The child leads its own process group, so a signal meant for `ticket` does not reach it on its own, and `ticket` stops it on the way out instead (#43).
+    While it runs it holds the terminal, so it can still ask for a passphrase and Ctrl-C reaches it first.
+    Anything that ends the read early — Ctrl-C, `Interrupted`, a failed write — stops the child and its group before the exception goes on.
     """
     process = subprocess.Popen(
         argv,
@@ -96,25 +226,38 @@ def tee(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        process_group=0,
     )
-    try:
-        if stdin_text is not None:
-            process.stdin.write(stdin_text)
-        process.stdin.close()
-    except BrokenPipeError:
-        # The child exited without reading its prompt. Its output and exit code
-        # below are the real story; the failed write is not.
-        pass
     lines: list[str] = []
-    # buffering=1 is line buffering, so an interrupted run keeps what it printed
-    # and a reader tailing the file sees each line as the step prints it.
-    with open(log, "w", buffering=1) if log is not None else nullcontext() as handle:
-        for line in process.stdout:
-            lines.append(line)
-            sys.stdout.write(line)
-            if handle is not None:
-                handle.write(line)
-    return "".join(lines), process.wait()
+    try:
+        # buffering=1 is line buffering, so an interrupted run keeps what it printed
+        # and a reader tailing the file sees each line as the step prints it.
+        with (
+            _foreground(process) as handed,
+            open(log, "w", buffering=1) if log is not None else nullcontext() as handle,
+        ):
+            # Inside the `try`: a prompt larger than the pipe blocks here until the child reads it, and a signal that lands meanwhile must still stop the child.
+            try:
+                if stdin_text is not None:
+                    process.stdin.write(stdin_text)
+                process.stdin.close()
+            except BrokenPipeError:
+                # The child exited without reading its prompt. Its output and exit code
+                # below are the real story; the failed write is not.
+                pass
+            for line in process.stdout:
+                lines.append(line)
+                sys.stdout.write(line)
+                if handle is not None:
+                    handle.write(line)
+            exit_code = process.wait()
+        # Without the terminal, Ctrl-C reached `ticket` itself, and a step exiting 130 is only a step exiting 130.
+        if handed and exit_code in INTERRUPTED_EXITS:
+            raise KeyboardInterrupt
+    except BaseException:
+        stop(process)
+        raise
+    return "".join(lines), exit_code
 
 
 def release_gate(store: Store, ticket: dict, step_id: str) -> None:
@@ -148,6 +291,7 @@ def run_step(
             print(f"sync: {reason}")
 
     log_file = store.log_path(ticket["key"], step.id)
+    stopped: BaseException | None = None
     try:
         output, exit_code = tee(
             argv,
@@ -156,6 +300,12 @@ def run_step(
             stdin_text=stdin_text,
             log=log_file,
         )
+    except (KeyboardInterrupt, Interrupted) as exc:
+        # `tee` has already stopped the child, and the log holds what it printed.
+        # A PR the step announced before it was stopped is open all the same, and a rerun that did not know it would open another.
+        stopped, output, exit_code = exc, "", None
+        with suppress(OSError):
+            output = log_file.read_text()
     except OSError as exc:
         # Nothing ever started, so `tee` wrote no file. This branch owns the log.
         output = f"could not execute {argv[0]}: {exc}\n"
@@ -186,6 +336,16 @@ def run_step(
     if worktree_match:
         ticket["worktree"] = worktree_match.group(1)
         record["registered_worktree"] = worktree_match.group(1)
+
+    if stopped is not None:
+        # Recorded as a failure so `next` runs it again, and marked so `show` can tell a stopped step from a broken one.
+        ticket.setdefault("steps", {})[step.id] = {
+            **record,
+            "status": "failed",
+            "interrupted": True,
+        }
+        store.write_ticket(ticket)
+        raise stopped
 
     if exit_code == 0:
         ticket.setdefault("steps", {})[step.id] = record

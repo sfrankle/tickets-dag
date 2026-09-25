@@ -14,10 +14,12 @@ There is no per-key registration, and every verb here resolves a stage name agai
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import sys
 from pathlib import Path
 
@@ -1366,7 +1368,26 @@ def _unswap(args, cfg, store: Store) -> None:
     )
 
 
+def _say_stopped(signum: int) -> None:
+    # After SIGHUP the terminal is gone and the write can fail with EIO; the exit status still says what happened.
+    with contextlib.suppress(OSError):
+        print(f"stopped by {signal.Signals(signum).name}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run one verb, turning a request to stop into an unwind rather than an abrupt exit."""
+    try:
+        with steps_module.handling(
+            steps_module.UNWINDING_SIGNALS, steps_module.raise_interrupted
+        ):
+            return _main(argv)
+    except (steps_module.Interrupted, KeyboardInterrupt) as exc:
+        signum = getattr(exc, "signum", signal.SIGINT)
+        _say_stopped(signum)
+        return 128 + signum
+
+
+def _main(argv: list[str] | None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     # A bare key means `show`. Keys are loose enough to look like words now, so
