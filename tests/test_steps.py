@@ -1,10 +1,13 @@
 import os
+import signal
 import textwrap
+import time
 
 import pytest
 
+from ticket import steps
 from ticket.config import load_config
-from ticket.steps import release_gate, run_step, tee
+from ticket.steps import Interrupted, release_gate, run_step, tee
 
 CONFIG = textwrap.dedent("""
     models: {opus: claude-opus-5, haiku: claude-haiku-4-5-20251001}
@@ -262,3 +265,85 @@ def test_a_steps_log_exists_before_the_step_finishes(cfg, store, tmp_path):
     assert (store.root / ticket["steps"]["draft-pr"]["log"]).read_text() == (
         "first\nsecond\n"
     )
+
+
+# --- stopping a step (#43) --------------------------------------------------
+
+
+@pytest.fixture
+def interrupt_after():
+    """Raise `Interrupted` in the test's own thread after a delay, the way `cli.main`'s handler does on SIGTERM."""
+
+    def arm(seconds: float) -> None:
+        def handler(signum, _frame):
+            raise Interrupted(signum)
+
+        signal.signal(signal.SIGALRM, handler)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+
+    previous = signal.getsignal(signal.SIGALRM)
+    yield arm
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, previous)
+
+
+def gone(pid: int, within: float = 3.0) -> bool:
+    """Whether `pid` has exited. An orphan is reaped by init, so give it a moment."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def pids(log) -> list[int]:
+    return [int(line) for line in log.read_text().split()]
+
+
+def test_stopping_tee_stops_the_child_and_what_it_started(
+    cfg, tmp_path, interrupt_after
+):
+    """The reported case: `ticket` ended and the `claude` child ran on, reparented to init."""
+    log = tmp_path / "run.log"
+    # The step's own pid, then a grandchild's, then it waits on the grandchild.
+    script = write_script(cfg, "forks.sh", "echo $$\nsleep 60 &\necho $!\nwait\n")
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        tee([str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log)
+    child, grandchild = pids(log)
+    assert gone(child)
+    assert gone(grandchild), "the grandchild outlived the step"
+
+
+def test_a_child_that_ignores_sigterm_is_killed(
+    cfg, tmp_path, interrupt_after, monkeypatch
+):
+    monkeypatch.setattr(steps, "GRACE_SECONDS", 0.2)
+    log = tmp_path / "run.log"
+    script = write_script(
+        cfg, "stubborn.sh", "trap '' TERM\necho $$\nwhile :; do sleep 0.05; done\n"
+    )
+    interrupt_after(0.5)
+    started = time.monotonic()
+    with pytest.raises(Interrupted):
+        tee([str(script)], cwd=tmp_path, env=dict(os.environ), stdin_text=None, log=log)
+    assert time.monotonic() - started < 5
+    assert gone(pids(log)[0])
+
+
+def test_an_interrupted_step_is_recorded_with_what_it_printed(
+    cfg, store, interrupt_after
+):
+    """Not left looking like it never ran, and re-runnable by `next` like any failure."""
+    write_script(cfg, "draft-pr.sh", "echo first\nsleep 60\n")
+    ticket = ticket_doc()
+    interrupt_after(0.5)
+    with pytest.raises(Interrupted):
+        run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    record = store.read_ticket("ABC-123")["steps"]["draft-pr"]
+    assert record["status"] == "failed"
+    assert record["interrupted"] is True
+    assert (store.root / record["log"]).read_text() == "first\n"

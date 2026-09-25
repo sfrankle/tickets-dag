@@ -18,7 +18,9 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
+import threading
 from pathlib import Path
 
 from . import collect as collect_module
@@ -1366,7 +1368,37 @@ def _unswap(args, cfg, store: Store) -> None:
     )
 
 
+# Signals whose default action ends the process without unwinding, which would skip the lock's `finally` and leave a running step's child orphaned (#43).
+# SIGINT is not here: Python already raises `KeyboardInterrupt` for it.
+STOPPING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+def _raise_interrupted(signum, _frame):
+    raise steps_module.Interrupted(signum)
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run one verb, turning a request to stop into an unwind rather than an abrupt exit."""
+    # `signal.signal` is main-thread only, and a caller on another thread keeps whatever handling it had.
+    if threading.current_thread() is not threading.main_thread():
+        return _main(argv)
+    previous = {
+        signum: signal.signal(signum, _raise_interrupted) for signum in STOPPING_SIGNALS
+    }
+    try:
+        return _main(argv)
+    except steps_module.Interrupted as exc:
+        print(f"stopped by {signal.Signals(exc.signum).name}", file=sys.stderr)
+        return 128 + exc.signum
+    except KeyboardInterrupt:
+        print("stopped by SIGINT", file=sys.stderr)
+        return 128 + signal.SIGINT
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _main(argv: list[str] | None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     # A bare key means `show`. Keys are loose enough to look like words now, so

@@ -424,7 +424,8 @@ def _list_lines(
 def _pipeline_lines(row: dict, width: int) -> list[str]:
     """Steps and reviews as one pipeline in config order, the way the resolver walks them."""
     action = row["next"]
-    entries: list[tuple[str, str, str]] = []
+    # (name, kind, stored status, what to print for it)
+    entries: list[tuple[str, str, str | None, str]] = []
     for step in row.get("steps") or []:
         status = step["status"]
         if (
@@ -433,14 +434,17 @@ def _pipeline_lines(row: dict, width: int) -> list[str]:
             and action["target"] == step["id"]
         ):
             status = "running"
-        entries.append((step["id"], step["kind"], status or ""))
+        text = status or ""
+        if status == "failed" and step.get("interrupted"):
+            text = "failed (interrupted)"
+        entries.append((step["id"], step["kind"], status, text))
     for review in row.get("reviews") or []:
-        entries.append((review["id"], "review", review["status"]))
+        entries.append((review["id"], "review", review["status"], review["status"]))
     ids = max((len(entry[0]) for entry in entries), default=0)
     lines = []
-    for name, kind, status in entries:
+    for name, kind, status, text in entries:
         marker = MARKERS.get(status or None, " ")
-        lines.append(f"[{marker}] {name:<{ids}}  {kind:<8} {status}".rstrip()[:width])
+        lines.append(f"[{marker}] {name:<{ids}}  {kind:<8} {text}".rstrip()[:width])
     return lines
 
 

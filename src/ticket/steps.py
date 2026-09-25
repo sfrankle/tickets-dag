@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,6 +74,38 @@ def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
     return argv, cfg.path_to(step.prompt).read_text()
 
 
+# How long a stopped step gets to exit on SIGTERM before its group is killed outright.
+GRACE_SECONDS = 5.0
+
+
+class Interrupted(BaseException):
+    """`ticket` was sent a signal whose default would end it without unwinding (#43).
+
+    A `BaseException`, like `KeyboardInterrupt`, so no `except Exception` on the way out swallows it and the lock's `finally` still runs.
+    """
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def stop(process: subprocess.Popen) -> None:
+    """End `process` and everything it started, politely first.
+
+    `process` leads its own group (`tee` starts it with `process_group=0`), so the group id is its pid and a grandchild it forked goes too.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=GRACE_SECONDS)
+    # Even when the leader has exited, something it forked can still hold the group.
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+
+
 def tee(
     argv: list[str],
     *,
@@ -87,6 +120,9 @@ def tee(
     end is the wrong experience for the one step a human actually watches, and a
     log written only after the process exits leaves nothing behind for a run
     that is killed or dies with its terminal (issue #27).
+
+    The child leads its own process group, so a signal meant for `ticket` does not reach it on its own, and `ticket` stops it on the way out instead (#43).
+    Anything that ends the read early — Ctrl-C, `Interrupted`, a failed write — stops the child and its group before the exception goes on.
     """
     process = subprocess.Popen(
         argv,
@@ -96,6 +132,7 @@ def tee(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        process_group=0,
     )
     try:
         if stdin_text is not None:
@@ -108,12 +145,18 @@ def tee(
     lines: list[str] = []
     # buffering=1 is line buffering, so an interrupted run keeps what it printed
     # and a reader tailing the file sees each line as the step prints it.
-    with open(log, "w", buffering=1) if log is not None else nullcontext() as handle:
-        for line in process.stdout:
-            lines.append(line)
-            sys.stdout.write(line)
-            if handle is not None:
-                handle.write(line)
+    try:
+        with (
+            open(log, "w", buffering=1) if log is not None else nullcontext() as handle
+        ):
+            for line in process.stdout:
+                lines.append(line)
+                sys.stdout.write(line)
+                if handle is not None:
+                    handle.write(line)
+    except BaseException:
+        stop(process)
+        raise
     return "".join(lines), process.wait()
 
 
@@ -156,6 +199,17 @@ def run_step(
             stdin_text=stdin_text,
             log=log_file,
         )
+    except (KeyboardInterrupt, Interrupted):
+        # `tee` has already stopped the child, and the log holds what it printed.
+        # Recorded as a failure so `next` runs it again, and marked so `show` can tell a stopped step from a broken one.
+        ticket.setdefault("steps", {})[step.id] = {
+            "status": "failed",
+            "interrupted": True,
+            "at": now(),
+            "log": store.relative(log_file),
+        }
+        store.write_ticket(ticket)
+        raise
     except OSError as exc:
         # Nothing ever started, so `tee` wrote no file. This branch owns the log.
         output = f"could not execute {argv[0]}: {exc}\n"

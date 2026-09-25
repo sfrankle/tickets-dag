@@ -1,5 +1,8 @@
 import json
+import os
+import signal
 import textwrap
+import threading
 
 import pytest
 
@@ -248,3 +251,20 @@ def test_next_warns_about_recorded_steps_the_config_no_longer_defines(
     assert "worktree" in err
     kept = Store(tmp_path / "store").read_ticket("ABC-123")["steps"]
     assert "jira-sync" in kept and "worktree" in kept
+
+
+def test_sigterm_mid_step_releases_the_lock_and_exits_143(env, capsys):
+    """SIGTERM's default ends Python without unwinding, which left the lock behind (#43)."""
+    (env / "scripts" / "draft-pr.sh").write_text("#!/bin/sh\necho first\nsleep 60\n")
+    main(["track", "ABC-123", "--repo", "acme/api"])
+    before = signal.getsignal(signal.SIGTERM)
+    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGTERM))
+    timer.start()
+    try:
+        code = main(["run", "ABC-123", "draft-pr"])
+    finally:
+        timer.cancel()
+    assert code == 128 + signal.SIGTERM
+    assert "stopped by SIGTERM" in capsys.readouterr().err
+    assert not Store(env / "store").lock_path("ABC-123").exists()
+    assert signal.getsignal(signal.SIGTERM) is before, "main left its handler installed"
