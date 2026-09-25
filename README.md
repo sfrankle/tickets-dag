@@ -234,6 +234,9 @@ Everything else is a script or a prompt the config points at, so adding a step i
 Steps run **in the ticket's checkout**.
 `worktrees.enabled` decides whether that is a worktree of its own under `worktrees.root` or the clone itself on `worktrees.branch`; `worktree.sh` reads the setting and announces the path it chose.
 The engine only ever learns the path.
+A recorded worktree that has since been removed stops the step, a review or a fix before it starts, naming the path; it never falls back to the clone, because `implement` in the main checkout is worse than not running (#46).
+`ticket refresh` is the repair, since its entries run with the dead path in `TICKET_RECORDED_WORKTREE` and can announce the live one.
+A ticket whose repo is not a key in `repos:` is refused the same way, naming both sides (#42); `track` still records it, with a warning, and a config with no `repos:` block accepts any repo.
 
 **Everything fetches.** `git fetch --prune`, and a fast-forward when one is possible, runs before every command that reads a checkout.
 The gh bot commits on the remote, so a stale checkout would mean trailer scanning never closes a finding.

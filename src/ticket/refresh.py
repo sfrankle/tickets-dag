@@ -20,7 +20,7 @@ from typing import TextIO
 from . import gh
 from . import reviews as reviews_module
 from .config import Config, config_path
-from .errors import GhError, StoreError
+from .errors import GhError, StepError, StoreError
 from .resolve import active_pr
 from .steps import PR_LINE, WORKTREE_LINE, step_env, tee
 from .store import LockHeld, Store
@@ -253,9 +253,14 @@ def refresh_ticket(
         return
     for run in cfg.refresh.ticket:
         cwd = entry_cwd(cfg, ticket)
-        output, code = run_entry(
-            cfg, run, cwd=cwd, env=entry_env(cfg, ticket, cwd), say=say
-        )
+        try:
+            env = entry_env(cfg, ticket, cwd)
+        except StepError as exc:
+            # A row naming a repo the config does not know (#42) fails this ticket, not the run.
+            say(f"failed: {exc}")
+            outcome.failures.append(f"{key} {label(run)}: {exc}")
+            break
+        output, code = run_entry(cfg, run, cwd=cwd, env=env, say=say)
         if code != 0:
             outcome.failures.append(f"{key} {label(run)}: exit {code}")
             break
