@@ -181,6 +181,10 @@ def _prs(
     return entries
 
 
+# The verb a refresh writes into each lock it takes, which is how a reader tells "refreshing" from a step running (#8).
+REFRESH = "refresh"
+
+
 def running(
     pid: int, since: str | None = None, log: str | None = None, verb: str | None = None
 ) -> dict:
@@ -215,20 +219,14 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock
     path = str(ctx.store.lock_path(ticket["key"]))
     if not status.alive:
         return Lock(running=None, state="stale", path=path)
-    if status.verb == "refresh":
-        # A refresh holds each ticket's lock for a few seconds and runs no step, so naming `next`'s step as running would be the view inventing a run (#8).
-        return Lock(
-            running=running(status.pid, status.taken_at, None, "refresh"),
-            state="held",
-            path=path,
-        )
+    # A refresh holds each ticket's lock for a few seconds and runs no step, so naming `next`'s step as running would be the view inventing a run (#8).
     log = (
         next((s["log"] for s in steps if s["id"] == action.target), None)
-        if action.kind == "step"
+        if action.kind == "step" and status.verb != REFRESH
         else None
     )
     return Lock(
-        running=running(status.pid, status.taken_at, log),
+        running=running(status.pid, status.taken_at, log, status.verb),
         state="held",
         path=path,
     )

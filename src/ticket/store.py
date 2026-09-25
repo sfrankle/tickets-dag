@@ -352,9 +352,10 @@ class Store:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            raise StoreError(
+            raise LockHeld(
                 f"{key} is locked by another run ({path}). "
-                f"Run `ticket unlock {key}` to clear it if that run died."
+                f"Run `ticket unlock {key}` to clear it if that run died.",
+                self.lock_status(key),
             ) from None
         try:
             try:
@@ -368,6 +369,14 @@ class Store:
 
 
 # --- locking helpers ------------------------------------------------------
+
+
+class LockHeld(StoreError):
+    """`lock` found the file already there; `status` says whose, so a caller can tell a busy run from a dead one without reading the file a second time."""
+
+    def __init__(self, message: str, status: LockStatus | None):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)

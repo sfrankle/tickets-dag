@@ -21,7 +21,7 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass, replace
 
-from .view import RUNNABLE_ACTIONS, open_suffix
+from .view import REFRESH, RUNNABLE_ACTIONS, open_suffix
 
 # Panel geometry.
 # The list grows with the terminal and never with the content (#28), and below 90 columns the two panes stop sharing a line at all.
@@ -201,9 +201,9 @@ def _contextual(row: dict | None) -> Contextual:
     key = row["key"]
     action = row["next"]
     target = action["target"] or ""
-    if (row.get("running") or {}).get("verb") == "refresh":
-        return Contextual("refreshing  ·  ENTER disabled", None)
     if row.get("running"):
+        if row["running"].get("verb") == REFRESH:
+            return Contextual("refreshing  ·  ENTER disabled", None)
         # The engine would refuse the second run anyway; disabling ENTER here keeps the common case away from that error (#28, run model).
         return Contextual(f"running {target}  ·  ENTER disabled".rstrip(), None)
     kind = action["kind"]
@@ -432,7 +432,7 @@ def _pipeline_lines(row: dict, width: int) -> list[str]:
         status = step["status"]
         if (
             row.get("running")
-            and row["running"].get("verb") != "refresh"
+            and row["running"].get("verb") != REFRESH
             and action["kind"] == "step"
             and action["target"] == step["id"]
         ):

@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 from . import gh
 from .config import Config, Step
@@ -248,14 +249,10 @@ def tee(
                 # The child exited without reading its prompt. Its output and exit code
                 # below are the real story; the failed write is not.
                 pass
+            emit = sink or _terminal_and(handle)
             for line in process.stdout:
                 lines.append(line)
-                if sink is not None:
-                    sink(line)
-                    continue
-                sys.stdout.write(line)
-                if handle is not None:
-                    handle.write(line)
+                emit(line)
             exit_code = process.wait()
         # Without the terminal, Ctrl-C reached `ticket` itself, and a step exiting 130 is only a step exiting 130.
         if handed and exit_code in INTERRUPTED_EXITS:
@@ -264,6 +261,17 @@ def tee(
         stop(process)
         raise
     return "".join(lines), exit_code
+
+
+def _terminal_and(handle: TextIO | None) -> Callable[[str], None]:
+    """`tee`'s sink when the caller brings none: the terminal, and the log when there is one."""
+
+    def emit(line: str) -> None:
+        sys.stdout.write(line)
+        if handle is not None:
+            handle.write(line)
+
+    return emit
 
 
 def release_gate(store: Store, ticket: dict, step_id: str) -> None:

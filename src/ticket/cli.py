@@ -110,7 +110,9 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     )
     if row["running"]:
         log = f"  {row['running']['log']}" if row["running"]["log"] else ""
-        label = "refreshing" if row["running"].get("verb") == "refresh" else "running"
+        label = (
+            "refreshing" if row["running"].get("verb") == view.REFRESH else "running"
+        )
         print(
             f"{label}: pid {row['running']['pid']} since {row['running']['since']}{log}"
         )

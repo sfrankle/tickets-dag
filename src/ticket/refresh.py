@@ -23,7 +23,8 @@ from .config import Config, config_path
 from .errors import GhError, StoreError
 from .resolve import active_pr
 from .steps import PR_LINE, WORKTREE_LINE, step_env, tee
-from .store import Store
+from .store import LockHeld, Store
+from .view import REFRESH
 
 QUEUE = "queue"
 
@@ -246,10 +247,11 @@ def refresh_ticket(
         say(f"failed: {exc}")
         outcome.failures.append(f"{key} built-in: {exc}")
         return
-    for run in cfg.refresh.ticket:
-        if dry_run:
+    if dry_run:
+        for run in cfg.refresh.ticket:
             say(f"[dry-run] would run {run}")
-            continue
+        return
+    for run in cfg.refresh.ticket:
         cwd = entry_cwd(cfg, ticket)
         output, code = run_entry(
             cfg, run, cwd=cwd, env=entry_env(cfg, ticket, cwd), say=say
@@ -258,7 +260,7 @@ def refresh_ticket(
             outcome.failures.append(f"{key} {label(run)}: exit {code}")
             break
         apply_announcements(ticket, output, cwd, say)
-    if not dry_run and ticket != before:
+    if ticket != before:
         store.write_ticket(ticket)
 
 
@@ -270,11 +272,12 @@ def run_queue(
     A failure is listed and the next entry still runs: a bulk sync that failed does not make the per-ticket catch-up wrong, only staler.
     """
     say = transcript.sink(QUEUE)
+    env = queue_env(cfg)
     for run in cfg.refresh.queue:
         if dry_run:
             say(f"[dry-run] would run {run}")
             continue
-        _, code = run_entry(cfg, run, cwd=cfg.root, env=queue_env(cfg), say=say)
+        _, code = run_entry(cfg, run, cwd=cfg.root, env=env, say=say)
         if code != 0:
             outcome.failures.append(f"{QUEUE} {label(run)}: exit {code}")
 
@@ -292,17 +295,19 @@ def refresh_all(cfg: Config, store: Store, *, dry_run: bool) -> int:
             if not listed.get("tracked"):
                 continue
             key = listed["key"]
-            if dry_run:
-                refresh_ticket(cfg, store, key, transcript, outcome, dry_run=True)
-                continue
-            status = store.lock_status(key)
-            if status is not None and status.alive:
+            try:
+                with nullcontext() if dry_run else store.lock(key, verb=REFRESH):
+                    refresh_ticket(
+                        cfg, store, key, transcript, outcome, dry_run=dry_run
+                    )
+            except LockHeld as exc:
+                status = exc.status
+                if status is None or not status.alive:
+                    transcript.write(key, f"failed: {exc}")
+                    outcome.failures.append(f"{key}: {exc}")
+                    continue
                 held_by = f" ({status.verb})" if status.verb else ""
                 outcome.skipped.append(f"{key}: locked by pid {status.pid}{held_by}")
-                continue
-            try:
-                with store.lock(key, verb="refresh"):
-                    refresh_ticket(cfg, store, key, transcript, outcome, dry_run=False)
             except StoreError as exc:
                 transcript.write(key, f"failed: {exc}")
                 outcome.failures.append(f"{key}: {exc}")
