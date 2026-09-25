@@ -47,8 +47,12 @@ def script(env, name: str, body: str) -> str:
     return f"scripts/{name}.sh"
 
 
-def configure(env, *, queue=(), ticket=()) -> None:
-    lines = [BASE.rstrip("\n"), "refresh:"]
+def configure(env, *, queue=(), ticket=(), tracker=()) -> None:
+    lines = [BASE.rstrip("\n")]
+    if tracker:
+        lines.append("tracker:")
+        lines.append(f"  summary: {json.dumps(list(tracker))}")
+    lines.append("refresh:")
     for name, runs in (("queue", queue), ("ticket", ticket)):
         if runs:
             lines.append(f"  {name}:")
@@ -162,6 +166,15 @@ def test_a_dead_worktree_is_repaired_by_an_announce(env, store):
     assert store.read_ticket("ABC-1")["worktree"] == str(real)
 
 
+def test_a_relative_announced_worktree_resolves_against_the_entrys_cwd(env, store):
+    (env / "clone" / "sub").mkdir()
+    configure(env, ticket=[script(env, "find", "echo 'ticket-worktree: sub'")])
+    track("ABC-1")
+    assert main(["refresh", "ABC-1"]) == 0
+    recorded = store.read_ticket("ABC-1")["worktree"]
+    assert recorded == str((env / "clone" / "sub").resolve())
+
+
 def test_an_announced_worktree_that_does_not_exist_is_not_recorded(env, store, capsys):
     configure(
         env, ticket=[script(env, "find", f"echo 'ticket-worktree: {env}/not-made'")]
@@ -217,6 +230,22 @@ def test_a_gh_error_in_the_builtin_part_fails_the_ticket_and_skips_its_entries(
     assert main(["refresh", "ABC-1"]) == 1
     assert not (env / "after-ran").exists()
     assert "ABC-1 built-in:" in capsys.readouterr().out
+
+
+def test_a_tracker_outage_warns_instead_of_skipping_the_entries(
+    env, store, fake_tracker, capsys, monkeypatch
+):
+    monkeypatch.setattr("ticket.gh.RETRY_BACKOFF", (0, 0))
+    fake_tracker(exit_code=1)
+    configure(
+        env,
+        tracker=["faketracker", "issue", "view", "{key}"],
+        ticket=[script(env, "after", f": > {env}/after-ran")],
+    )
+    track("ABC-1")
+    assert main(["refresh", "ABC-1"]) == 0
+    assert (env / "after-ran").exists()
+    assert "warning: tracker summary" in capsys.readouterr().out
 
 
 def test_a_refresh_that_changes_nothing_does_not_restamp_the_ticket(env, store):

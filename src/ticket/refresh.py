@@ -104,6 +104,7 @@ def builtin(
 
     Sync, fetch and the PR lookup run even under `--dry-run` (decision 22); only store writes and the tracker shell-out are skipped.
     A dead recorded worktree is reported by `gh.sync` rather than raised, so it cannot stop the entries that would repair it.
+    The summary is a convenience: a tracker outage (`GhError`) is a warning, not a failure, so worktree/PR discovery and the ticket's entries still run without it (#8).
     """
     if cfg.sync and ticket.get("worktree"):
         reason = gh.sync(Path(ticket["worktree"]))
@@ -116,7 +117,11 @@ def builtin(
             say(f"[dry-run] would write pr {pr_ref} (head {pr['head']})")
         else:
             store.write_pr(pr)
-    summary = fetch_summary(cfg, ticket["key"], dry_run=dry_run, say=say)
+    try:
+        summary = fetch_summary(cfg, ticket["key"], dry_run=dry_run, say=say)
+    except GhError as exc:
+        say(f"warning: tracker summary: {exc}")
+        summary = None
     if summary is not None:
         ticket["summary"] = summary
 
@@ -182,11 +187,14 @@ def label(run: str) -> str:
     return Path(run).stem
 
 
-def apply_announcements(ticket: dict, output: str, say: Callable[[str], None]) -> None:
+def apply_announcements(
+    ticket: dict, output: str, cwd: Path, say: Callable[[str], None]
+) -> None:
     """The two announce lines a step can print, under refresh's rules.
 
     A PR the ticket already has does not move `active`: every refresh re-announces it, and moving the pointer each time would undo any `--pr` selection.
     A worktree that is not a directory is not recorded: a discovery script may name one the worktree step has yet to make, and recording it would strand the ticket the way #8 describes.
+    A relative announced path is checked and recorded against `cwd`, the entry's own working directory, not this process's: the entry ran there, so that is what "does not exist" and "does exist" have to mean.
     """
     pr_match = PR_LINE.search(output)
     if pr_match:
@@ -198,12 +206,17 @@ def apply_announcements(ticket: dict, output: str, say: Callable[[str], None]) -
             say(f"registered {ref}")
     worktree_match = WORKTREE_LINE.search(output)
     if worktree_match:
-        path = worktree_match.group(1)
-        if not Path(path).is_dir():
-            say(f"{path} does not exist, not recorded")
-        elif path != ticket.get("worktree"):
-            ticket["worktree"] = path
-            say(f"worktree {path}")
+        announced = worktree_match.group(1)
+        resolved = Path(announced)
+        if not resolved.is_absolute():
+            resolved = cwd / resolved
+        if not resolved.is_dir():
+            say(f"{announced} does not exist, not recorded")
+        else:
+            path = str(resolved.resolve())
+            if path != ticket.get("worktree"):
+                ticket["worktree"] = path
+                say(f"worktree {path}")
 
 
 def refresh_ticket(
@@ -244,7 +257,7 @@ def refresh_ticket(
         if code != 0:
             outcome.failures.append(f"{key} {label(run)}: exit {code}")
             break
-        apply_announcements(ticket, output, say)
+        apply_announcements(ticket, output, cwd, say)
     if not dry_run and ticket != before:
         store.write_ticket(ticket)
 
