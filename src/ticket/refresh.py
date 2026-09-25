@@ -249,6 +249,53 @@ def refresh_ticket(
         store.write_ticket(ticket)
 
 
+def run_queue(
+    cfg: Config, transcript: Transcript, outcome: Outcome, *, dry_run: bool
+) -> None:
+    """Each `refresh.queue` entry, once, in the config directory. Announce lines mean nothing without a ticket, so none are read.
+
+    A failure is listed and the next entry still runs: a bulk sync that failed does not make the per-ticket catch-up wrong, only staler.
+    """
+    say = transcript.sink(QUEUE)
+    for run in cfg.refresh.queue:
+        if dry_run:
+            say(f"[dry-run] would run {run}")
+            continue
+        _, code = run_entry(cfg, run, cwd=cfg.root, env=queue_env(cfg), say=say)
+        if code != 0:
+            outcome.failures.append(f"{QUEUE} {label(run)}: exit {code}")
+
+
+def refresh_all(cfg: Config, store: Store, *, dry_run: bool) -> int:
+    """`ticket refresh` with no key: the queue entries, then every tracked ticket under its own lock.
+
+    A ticket a live run is holding is skipped rather than failed — busy is not broken — so an overnight `implement` does not turn the morning refresh red.
+    A stale lock is a failure: nothing will clear it on its own, and the message names `ticket unlock`.
+    `--dry-run` takes no lock, as `main` does not for a keyed dry run.
+    """
+    with session(store, dry_run=dry_run) as (transcript, outcome):
+        run_queue(cfg, transcript, outcome, dry_run=dry_run)
+        for listed in store.list_tickets():
+            if not listed.get("tracked"):
+                continue
+            key = listed["key"]
+            if dry_run:
+                refresh_ticket(cfg, store, key, transcript, outcome, dry_run=True)
+                continue
+            status = store.lock_status(key)
+            if status is not None and status.alive:
+                held_by = f" ({status.verb})" if status.verb else ""
+                outcome.skipped.append(f"{key}: locked by pid {status.pid}{held_by}")
+                continue
+            try:
+                with store.lock(key, verb="refresh"):
+                    refresh_ticket(cfg, store, key, transcript, outcome, dry_run=False)
+            except StoreError as exc:
+                transcript.write(key, f"failed: {exc}")
+                outcome.failures.append(f"{key}: {exc}")
+    return 1 if outcome.failures else 0
+
+
 def refresh_one(cfg: Config, store: Store, key: str, *, dry_run: bool) -> int:
     """`ticket refresh KEY`. `main` already holds the lock, so this does not take it again, and `queue` entries do not run."""
     with session(store, dry_run=dry_run) as (transcript, outcome):

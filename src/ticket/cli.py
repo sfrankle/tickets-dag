@@ -776,13 +776,10 @@ def cmd_refresh(args) -> int:
         if code == 0:
             print(f"refreshed {args.key}")
         return code
-    for ticket in ctx.store.list_tickets():
-        if ticket.get("tracked"):
-            refresh_module.refresh_one(
-                ctx.cfg, ctx.store, ticket["key"], dry_run=args.dry_run
-            )
-    print("refreshed every tracked row")
-    return 0
+    code = refresh_module.refresh_all(ctx.cfg, ctx.store, dry_run=args.dry_run)
+    if code == 0:
+        print("refreshed every tracked row")
+    return code
 
 
 def cmd_reset(args) -> int:

@@ -1,9 +1,11 @@
 import json
 import os
+import sys
 import textwrap
 
 import pytest
 
+from tests.conftest import dead_pid, write_lock
 from ticket.cli import main
 from ticket.store import Store
 
@@ -235,3 +237,162 @@ def test_dry_run_runs_no_entry_and_writes_no_log(env, store, capsys):
     assert not (env / "ran").exists()
     assert not (store.root / "refresh").exists()
     assert "[dry-run] would run scripts/touch.sh" in capsys.readouterr().out
+
+
+# --- every ticket -----------------------------------------------------------
+
+
+def test_queue_runs_once_before_any_ticket(env, store):
+    configure(
+        env,
+        queue=[
+            script(
+                env, "bulk", f'echo "queue ${{TICKET_KEY:-none}}" >> {env}/order.txt'
+            )
+        ],
+        ticket=[script(env, "each", f'echo "ticket $TICKET_KEY" >> {env}/order.txt')],
+    )
+    track("ABC-1")
+    track("ABC-2")
+    assert main(["refresh"]) == 0
+    lines = (env / "order.txt").read_text().splitlines()
+    assert lines[0] == "queue none"
+    assert sorted(lines[1:]) == ["ticket ABC-1", "ticket ABC-2"]
+
+
+def test_refresh_with_a_key_skips_the_queue(env, store):
+    configure(env, queue=[script(env, "bulk", f"touch {env}/queue-ran")])
+    track("ABC-1")
+    assert main(["refresh", "ABC-1"]) == 0
+    assert not (env / "queue-ran").exists()
+
+
+def test_a_failing_queue_entry_is_listed_and_the_tickets_still_run(env, store, capsys):
+    configure(
+        env,
+        queue=[script(env, "bulk", "exit 2")],
+        ticket=[script(env, "each", f"touch {env}/ticket-ran")],
+    )
+    track("ABC-1")
+    assert main(["refresh"]) == 1
+    assert (env / "ticket-ran").exists()
+    assert "queue bulk: exit 2" in capsys.readouterr().out
+
+
+def test_one_ticket_failing_does_not_stop_the_next(env, store, capsys):
+    configure(
+        env,
+        ticket=[
+            script(
+                env,
+                "each",
+                f'[ "$TICKET_KEY" = ABC-1 ] && exit 4\ntouch {env}/$TICKET_KEY',
+            )
+        ],
+    )
+    track("ABC-1")
+    track("ABC-2")
+    assert main(["refresh"]) == 1
+    assert (env / "ABC-2").exists()
+    out = capsys.readouterr().out
+    assert "failed | ABC-1 each: exit 4" in out
+    assert "refreshed every tracked row" not in out
+
+
+def test_a_ticket_locked_by_a_live_run_is_skipped_and_the_run_still_succeeds(
+    env, store, capsys
+):
+    configure(env, ticket=[script(env, "each", f"touch {env}/$TICKET_KEY")])
+    track("ABC-1")
+    track("ABC-2")
+    write_lock(store, f"{os.getpid()}\n", key="ABC-1")
+    assert main(["refresh"]) == 0
+    assert not (env / "ABC-1").exists()
+    assert (env / "ABC-2").exists()
+    assert "skipped | ABC-1: locked by pid" in capsys.readouterr().out
+
+
+def test_a_stale_lock_fails_that_ticket_and_names_the_fix(env, store, capsys):
+    configure(env, ticket=[script(env, "each", f"touch {env}/$TICKET_KEY")])
+    track("ABC-1")
+    track("ABC-2")
+    write_lock(store, f"{dead_pid()}\n", key="ABC-1")
+    assert main(["refresh"]) == 1
+    assert (env / "ABC-2").exists()
+    assert "ticket unlock ABC-1" in capsys.readouterr().out
+
+
+def test_each_ticket_is_locked_as_refresh_while_its_entries_run(env, store):
+    configure(
+        env,
+        ticket=[
+            script(
+                env, "peek", f"cat {env}/store/locks/$TICKET_KEY.lock > {env}/lock.txt"
+            )
+        ],
+    )
+    track("ABC-1")
+    assert main(["refresh"]) == 0
+    assert (env / "lock.txt").read_text().splitlines()[1] == "refresh"
+    assert not store.lock_path("ABC-1").exists()
+
+
+def test_a_step_written_during_the_run_is_not_overwritten(env, store):
+    """Each ticket's entry writes the *other* ticket's state after the run listed them.
+
+    Whichever ticket refreshes second must keep the edit, so this holds whatever order `list_tickets` returns — it sorts by `updated`, which depends on whether the two `track` calls land in the same second.
+    """
+    edit = (
+        'if [ "$TICKET_KEY" = ABC-1 ]; then other=ABC-2; else other=ABC-1; fi\n'
+        f'{sys.executable} -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); '
+        f"d['steps']={{'evaluate':{{'status':'done'}}}}; json.dump(d,open(p,'w'))\" "
+        f"{env}/store/tickets/$other/state.json\n"
+        # A change of its own, so the ticket is written back: refresh writes only a ticket that changed, and a stale copy that is never written cannot clobber anything.
+        'echo "ticket-pr: acme/api#${TICKET_KEY#ABC-}"'
+    )
+    configure(env, ticket=[script(env, "edit", edit)])
+    track("ABC-1")
+    track("ABC-2")
+    assert main(["refresh"]) == 0
+    # The ticket refreshed second is the one a stale copy would clobber; asserting both covers either order.
+    for key in ("ABC-1", "ABC-2"):
+        ticket = store.read_ticket(key)
+        assert ticket["steps"]["evaluate"]["status"] == "done", key
+        assert ticket["prs"], key
+
+
+def test_ctrl_c_mid_run_releases_the_lock_and_logs_what_already_failed(
+    env, store, monkeypatch
+):
+    from ticket import refresh as refresh_module
+
+    configure(env, ticket=[script(env, "each", "exit 5")])
+    track("ABC-1")
+    track("ABC-2")
+    real = refresh_module.refresh_ticket
+    calls = []
+
+    def interrupt_second(*args, **kwargs):
+        calls.append(args[2])
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(refresh_module, "refresh_ticket", interrupt_second)
+    assert main(["refresh"]) == 130
+    assert f"{calls[0]} each: exit 5" in log_text(store)
+    assert not store.lock_path(calls[1]).exists()
+
+
+def test_dry_run_with_no_key_runs_nothing_and_takes_no_lock(env, store, capsys):
+    configure(
+        env,
+        queue=[script(env, "bulk", f"touch {env}/ran")],
+        ticket=[script(env, "each", f"touch {env}/ran")],
+    )
+    track("ABC-1")
+    assert main(["refresh", "--dry-run"]) == 0
+    assert not (env / "ran").exists()
+    out = capsys.readouterr().out
+    assert "queue | [dry-run] would run scripts/bulk.sh" in out
+    assert "ABC-1 | [dry-run] would run scripts/each.sh" in out
