@@ -323,16 +323,18 @@ class Store:
             taken_at = path.stat().st_mtime
         except OSError:
             return None
+        pid, verb = _lock_record(path)
         return LockStatus(
-            pid=_lock_pid(path),
+            pid=pid,
             taken_at=_stamp(datetime.fromtimestamp(taken_at, UTC)),
+            verb=verb,
         )
 
     def clear_lock(self, key: str) -> None:
         self.lock_path(key).unlink(missing_ok=True)
 
     @contextmanager
-    def lock(self, key: str):
+    def lock(self, key: str, verb: str | None = None):
         path = self.lock_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -344,7 +346,8 @@ class Store:
             ) from None
         try:
             try:
-                os.write(fd, f"{os.getpid()}\n".encode())
+                # The verb on the second line is what lets a reader say "refreshing" rather than guess the holder is running `next` (#8).
+                os.write(fd, f"{os.getpid()}\n{verb or ''}\n".encode())
             finally:
                 os.close(fd)
             yield
@@ -359,23 +362,30 @@ class Store:
 class LockStatus:
     pid: int | None
     taken_at: str
+    verb: str | None = None
 
     @property
     def alive(self) -> bool:
         return self.pid is not None and _alive(self.pid)
 
 
-def _lock_pid(path: Path) -> int | None:
-    """The pid a lock file records, or `None` if it does not record a usable one.
+def _lock_record(path: Path) -> tuple[int | None, str | None]:
+    """The pid and verb a lock file records; `None` for whichever it does not.
 
     A run killed between creating the file and writing its pid leaves it empty.
-    Unknown is not the same as alive: the file is stale either way, and reading
-    it as a live holder would make the one verb that clears it refuse forever.
+    Unknown is not the same as alive: the file is stale either way, and reading it as a live holder would make the one verb that clears it refuse forever.
+    A file written before the verb was recorded holds the pid alone, and reads as verb unknown.
     """
     try:
-        return int(path.read_text().strip())
-    except (OSError, ValueError):
-        return None
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None, None
+    try:
+        pid = int(lines[0].strip()) if lines else None
+    except ValueError:
+        pid = None
+    verb = lines[1].strip() if len(lines) > 1 and lines[1].strip() else None
+    return pid, verb
 
 
 def _alive(pid: int) -> bool:

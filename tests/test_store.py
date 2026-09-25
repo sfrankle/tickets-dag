@@ -525,6 +525,26 @@ def test_an_unreadable_pid_is_not_taken_for_a_live_run(store):
     assert status.alive is False
 
 
+def test_a_lock_records_the_verb_holding_it(store):
+    with store.lock("ABC-123", verb="refresh"):
+        status = store.lock_status("ABC-123")
+    assert status.pid == os.getpid()
+    assert status.verb == "refresh"
+
+
+def test_a_lock_taken_without_a_verb_records_none(store):
+    with store.lock("ABC-123"):
+        assert store.lock_status("ABC-123").verb is None
+
+
+def test_a_pid_only_lock_from_an_older_version_still_parses(store):
+    write_lock(store, f"{os.getpid()}\n")
+    status = store.lock_status("ABC-123")
+    assert status.pid == os.getpid()
+    assert status.alive is True
+    assert status.verb is None
+
+
 def test_clear_lock_removes_the_file(store):
     path = write_lock(store, "1\n")
     store.clear_lock("ABC-123")

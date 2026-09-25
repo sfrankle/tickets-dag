@@ -201,6 +201,8 @@ def _contextual(row: dict | None) -> Contextual:
     key = row["key"]
     action = row["next"]
     target = action["target"] or ""
+    if (row.get("running") or {}).get("verb") == "refresh":
+        return Contextual("refreshing  ·  ENTER disabled", None)
     if row.get("running"):
         # The engine would refuse the second run anyway; disabling ENTER here keeps the common case away from that error (#28, run model).
         return Contextual(f"running {target}  ·  ENTER disabled".rstrip(), None)
@@ -430,6 +432,7 @@ def _pipeline_lines(row: dict, width: int) -> list[str]:
         status = step["status"]
         if (
             row.get("running")
+            and row["running"].get("verb") != "refresh"
             and action["kind"] == "step"
             and action["target"] == step["id"]
         ):

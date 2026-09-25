@@ -216,6 +216,23 @@ def test_enter_on_a_running_row_emits_nothing():
     assert contextual(State(), [row]).command is None
 
 
+def test_a_refreshing_row_says_refreshing_and_disables_enter():
+    row = make_row(
+        "ABC-123", running={"pid": 4823, "since": "x", "log": None, "verb": "refresh"}
+    )
+    line = contextual(State(), [row])
+    assert line.command is None
+    assert "refreshing" in line.label
+
+
+def test_a_refreshing_row_does_not_mark_the_next_step_running():
+    row = make_row(
+        "ABC-123", running={"pid": 4823, "since": "x", "log": None, "verb": "refresh"}
+    )
+    screen = "\n".join(render(State(), [row], 120, 40))
+    assert "running" not in screen
+
+
 def test_enter_collects_and_fixes_by_the_resolver_s_answer():
     collect = make_row(
         "ABC-1",

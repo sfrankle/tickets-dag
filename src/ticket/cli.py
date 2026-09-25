@@ -111,8 +111,9 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     )
     if row["running"]:
         log = f"  {row['running']['log']}" if row["running"]["log"] else ""
+        label = "refreshing" if row["running"].get("verb") == "refresh" else "running"
         print(
-            f"running: pid {row['running']['pid']} since {row['running']['since']}{log}"
+            f"{label}: pid {row['running']['pid']} since {row['running']['since']}{log}"
         )
     elif row["lock"] == "stale":
         # The one place a stale lock is reported before it breaks something: otherwise it surfaces as the next run refusing to take the lock.
@@ -1428,7 +1429,7 @@ def _main(argv: list[str] | None) -> int:
         writing = args.verb in WRITE_VERBS
         if writing and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
-            with store.lock(key):
+            with store.lock(key, verb=args.verb):
                 return _dispatch(args, locked=True)
         return _dispatch(args, locked=False)
     except TicketError as exc:

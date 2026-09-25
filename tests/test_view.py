@@ -276,6 +276,17 @@ def test_running_names_the_log_of_the_step_next_would_run(tracked, store):
     assert row["running"]["log"] == "tickets/e.log"
 
 
+def test_a_refresh_holding_the_lock_is_refreshing_not_the_next_step(tracked, store):
+    ticket = store.read_ticket("ABC-123")
+    ticket["steps"] = {"evaluate": {"status": "running", "log": "tickets/e.log"}}
+    store.write_ticket(ticket)
+    write_lock(store, f"{os.getpid()}\nrefresh\n")
+    row = row_for()
+    assert row["lock"] == "held"
+    assert row["running"]["verb"] == "refresh"
+    assert row["running"]["log"] is None
+
+
 def test_a_dead_pid_is_a_stale_lock_and_nothing_is_running(tracked, store):
     path = write_lock(store, f"{dead_pid()}\n")
     row = row_for()
@@ -305,6 +316,12 @@ def test_show_reports_a_running_step(tracked, store, capsys):
     write_lock(store, f"{os.getpid()}\n")
     main(["show", "ABC-123"])
     assert f"running: pid {os.getpid()}" in capsys.readouterr().out
+
+
+def test_show_says_refreshing(tracked, store, capsys):
+    write_lock(store, f"{os.getpid()}\nrefresh\n")
+    main(["show", "ABC-123"])
+    assert "refreshing: pid" in capsys.readouterr().out
 
 
 def test_show_lists_the_prs_when_there_is_more_than_one(tracked, store, capsys):
