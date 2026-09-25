@@ -8,6 +8,7 @@
           api_115_findings.json          that PR's findings
           logs/                          one file per run
       locks/
+      refresh/                           one log per `ticket refresh` run
 
 Everything one ticket knows is in one directory, so a ticket can be read, archived or deleted by looking at a single place.
 A store written by an older version is type-grouped (`tickets/KEY.json`, `prs/`, `findings/`, `logs/KEY/`); it is migrated in place the first time a `Store` is opened on it.
@@ -139,12 +140,11 @@ class Store:
 
     # --- logs ----------------------------------------------------------
 
-    def _fresh_log(self, key: str, stem: str, suffix: str) -> Path:
-        """A file under the ticket's own `logs/` that nothing is already using.
+    def _fresh_file(self, directory: Path, stem: str, suffix: str) -> Path:
+        """A file in `directory` that nothing is already using.
 
         The stamp and the collision walk live here rather than at each caller, so the #27 layout is changed in one place.
         """
-        directory = self.ticket_dir(key) / "logs"
         directory.mkdir(parents=True, exist_ok=True)
         started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         path = directory / f"{stem}-{started}{suffix}"
@@ -153,6 +153,10 @@ class Store:
             attempt += 1
             path = directory / f"{stem}-{started}-{attempt}{suffix}"
         return path
+
+    def _fresh_log(self, key: str, stem: str, suffix: str) -> Path:
+        """A file under the ticket's own `logs/` that nothing is already using."""
+        return self._fresh_file(self.ticket_dir(key) / "logs", stem, suffix)
 
     def log_path(self, key: str, step: str) -> Path:
         """A fresh file for this run, under the ticket's own `logs/`.
@@ -167,6 +171,14 @@ class Store:
         The TUI spawns `ticket` as a detached child (#37), and this file is the only place an immediate crash can announce itself: the child dies before the engine has written anything, so without it the row simply never starts and says nothing about why.
         """
         return self._fresh_log(key, "spawn", ".err")
+
+    def refresh_log_path(self) -> Path:
+        """A fresh file for one `ticket refresh` run, keyed or not (#8).
+
+        One file per run rather than per ticket: the run is what a morning refresh is read as, and a refresh of every ticket would otherwise leave one file per ticket per entry.
+        Under `refresh/`, not a root-level `logs/`, which `migrate` reads as the pre-#27 layout.
+        """
+        return self._fresh_file(self.root / "refresh", "refresh", ".log")
 
     def relative(self, path: Path) -> str:
         """How a path is recorded in state: relative to the store root.

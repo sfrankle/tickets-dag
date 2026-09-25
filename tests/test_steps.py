@@ -260,6 +260,21 @@ def test_tee_writes_each_line_as_it_arrives(cfg, tmp_path):
     assert log.read_text() == "first\nsecond\n"
 
 
+def test_tee_with_a_sink_hands_it_every_line_and_prints_nothing(tmp_path, capsys):
+    seen: list[str] = []
+    output, code = tee(
+        ["/bin/sh", "-c", "echo one; printf two"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        stdin_text=None,
+        sink=seen.append,
+    )
+    assert code == 0
+    assert seen == ["one\n", "two"]
+    assert output == "one\ntwo"
+    assert capsys.readouterr().out == ""
+
+
 def test_a_steps_log_exists_before_the_step_finishes(cfg, store, tmp_path):
     """Same guarantee through `run_step`: the file it names is being written
     while the step runs, not once it is over."""

@@ -549,3 +549,22 @@ def test_clear_lock_removes_the_file(store):
     path = write_lock(store, "1\n")
     store.clear_lock("ABC-123")
     assert not path.exists()
+
+
+def test_a_refresh_log_lives_under_refresh_not_logs(store):
+    path = store.refresh_log_path()
+    assert path.parent == store.root / "refresh"
+    assert path.name.startswith("refresh-") and path.suffix == ".log"
+    assert not (store.root / "logs").exists()
+
+
+def test_two_refresh_logs_in_one_second_do_not_collide(store):
+    first = store.refresh_log_path()
+    first.write_text("x")
+    assert store.refresh_log_path() != first
+
+
+def test_a_refresh_directory_does_not_trigger_the_old_layout_migration(store):
+    store.refresh_log_path().write_text("x")
+    reopened = Store(store.root)
+    assert (reopened.root / "refresh").is_dir()

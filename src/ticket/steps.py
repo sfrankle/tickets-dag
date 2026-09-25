@@ -13,7 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,6 +206,7 @@ def tee(
     env: dict,
     stdin_text: str | None,
     log: Path | None = None,
+    sink: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Run, streaming output to the terminal and to `log` as it arrives, and collecting it.
 
@@ -217,6 +218,8 @@ def tee(
     The child leads its own process group, so a signal meant for `ticket` does not reach it on its own, and `ticket` stops it on the way out instead (#43).
     While it runs it holds the terminal, so it can still ask for a passphrase and Ctrl-C reaches it first.
     Anything that ends the read early — Ctrl-C, `Interrupted`, a failed write — stops the child and its group before the exception goes on.
+    With `sink`, each line goes to it instead of to the terminal and `log`: `ticket refresh` prefixes and logs its own (#8).
+    The returned text is the raw output either way, so announce lines still match at the start of a line.
     """
     process = subprocess.Popen(
         argv,
@@ -247,6 +250,9 @@ def tee(
                 pass
             for line in process.stdout:
                 lines.append(line)
+                if sink is not None:
+                    sink(line)
+                    continue
                 sys.stdout.write(line)
                 if handle is not None:
                     handle.write(line)
