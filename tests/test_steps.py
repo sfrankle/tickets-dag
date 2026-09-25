@@ -13,6 +13,7 @@ import pytest
 
 from ticket import steps
 from ticket.config import load_config
+from ticket.errors import StepError
 from ticket.steps import Interrupted, release_gate, run_step, tee
 
 CONFIG = textwrap.dedent("""
@@ -160,6 +161,75 @@ def test_a_step_runs_in_the_worktree_once_one_is_registered(cfg, store):
     ticket["worktree"] = str(checkout)
     run_step(cfg, store, ticket, cfg.step("draft-pr"))
     assert str(checkout) in store.read_log(ticket["steps"]["draft-pr"]["log"])
+
+
+def test_a_step_refuses_a_recorded_worktree_that_is_gone(cfg, store):
+    """#46: the step does not start, and the message names the path and the way out."""
+    write_script(cfg, "draft-pr.sh", f"touch {cfg.root}/ran\n")
+    ticket = ticket_doc()
+    ticket["worktree"] = str(cfg.root / "wt-gone")
+    with pytest.raises(StepError) as raised:
+        run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    message = str(raised.value)
+    assert str(cfg.root / "wt-gone") in message
+    assert "ticket refresh ABC-123" in message
+    assert not (cfg.root / "ran").exists()
+    assert "draft-pr" not in ticket["steps"]
+
+
+def test_a_dead_worktree_is_refused_before_the_fetch(cfg, store, fake_bin):
+    """Sync runs before the step, and fetching into a missing directory is the same fault told worse."""
+    write_script(cfg, "draft-pr.sh", "echo hi\n")
+    ticket = ticket_doc()
+    ticket["worktree"] = str(cfg.root / "wt-gone")
+    with pytest.raises(StepError):
+        run_step(cfg, store, ticket, cfg.step("draft-pr"))
+    assert fake_bin.calls_to("git") == []
+
+
+def test_a_dead_worktree_is_not_silently_swapped_for_the_clone(tmp_path):
+    """#46's "not this": `implement` in the main checkout is worse than refusing."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    cfg = config_with_repos(tmp_path, "acme/api:\n    path: clone\n")
+    ticket = ticket_doc()
+    ticket["worktree"] = str(tmp_path / "wt-gone")
+    with pytest.raises(StepError):
+        steps.workdir(cfg, ticket)
+
+
+def config_with_repos(tmp_path, repos: str):
+    path = tmp_path / "config.yml"
+    path.write_text(CONFIG + "repos:\n  " + repos)
+    (tmp_path / "prompts").mkdir(exist_ok=True)
+    (tmp_path / "prompts" / "evaluate.md").write_text("Evaluate the ticket.\n")
+    (tmp_path / "prompts" / "describe.md").write_text("Describe the PR.\n")
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    return load_config(path)
+
+
+def test_a_repo_the_config_does_not_know_is_refused_naming_both_sides(tmp_path):
+    """#42: a bare `repos:` key and a qualified row do not match, and saying so beats an unset TICKET_REPO_PATH."""
+    cfg = config_with_repos(tmp_path, "api:\n    path: clone\n")
+    ticket = ticket_doc()  # repo: acme/api
+    for call in (steps.workdir, steps.step_env):
+        with pytest.raises(StepError) as raised:
+            call(cfg, ticket)
+        message = str(raised.value)
+        assert "'acme/api'" in message
+        assert "api" in message.split("repos:", 1)[1]
+
+
+def test_a_config_with_no_repos_block_runs_any_repo_in_its_own_directory(cfg):
+    """`repos:` is optional (README), so a config without one has no set of names to miss."""
+    assert steps.workdir(cfg, ticket_doc()) == cfg.root
+
+
+def test_a_ticket_with_no_repo_is_not_an_unknown_repo(tmp_path):
+    cfg = config_with_repos(tmp_path, "acme/api:\n    path: clone\n")
+    ticket = ticket_doc()
+    ticket["repo"] = ""
+    assert steps.workdir(cfg, ticket) == cfg.root
 
 
 def test_a_step_gets_the_worktree_and_branch_in_its_env(cfg, store):

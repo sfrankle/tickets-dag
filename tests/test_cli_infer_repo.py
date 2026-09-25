@@ -203,3 +203,12 @@ def test_stages_resolves_an_alias_in_its_own_repo_flag(env, capsys):
 def test_config_resolves_an_alias_in_its_own_repo_flag(env, capsys):
     main(["config", "--repo", "CSM"])
     assert "evaluate" not in capsys.readouterr().out
+
+
+def test_track_warns_when_the_repo_is_not_in_the_config(env, capsys):
+    """#42: `--repo` still passes an unknown name through, but says so while the value is entering state."""
+    assert main(["track", "ABC-1", "--repo", "someone/else"]) == 0
+    assert row(env, "ABC-1")["repo"] == "someone/else"
+    err = capsys.readouterr().err
+    assert "'someone/else'" in err
+    assert "sfrankle/tickets-dag" in err

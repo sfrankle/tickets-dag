@@ -425,3 +425,18 @@ def test_dry_run_with_no_key_runs_nothing_and_takes_no_lock(env, store, capsys):
     out = capsys.readouterr().out
     assert "queue | [dry-run] would run scripts/bulk.sh" in out
     assert "ABC-1 | [dry-run] would run scripts/each.sh" in out
+
+
+def test_a_repo_the_config_does_not_know_fails_that_ticket_not_the_run(
+    env, store, capsys
+):
+    """#42 lands as that ticket's failure, per the #8 spec, and the next ticket still refreshes."""
+    configure(env, ticket=[script(env, "touch", f'touch "{env}/ran-$TICKET_KEY"')])
+    track("ABC-1", repo="someone/else")
+    track("ABC-2")
+    assert main(["refresh"]) == 1
+    out = capsys.readouterr().out
+    assert "ABC-1 touch: " in out
+    assert "'someone/else'" in out
+    assert not (env / "ran-ABC-1").exists()
+    assert (env / "ran-ABC-2").exists()

@@ -21,6 +21,7 @@ from typing import TextIO
 
 from . import gh
 from .config import Config, Step
+from .errors import StepError
 from .resolve import active_pr
 from .store import Store, now
 
@@ -42,14 +43,52 @@ def workdir(cfg: Config, ticket: dict) -> Path:
     The ticket's worktree once one is registered, else the clone named by
     `repos.<repo>.path`, else the config directory. `implement` edits code and
     `worktree.sh` runs `git worktree add`; neither works from `~/.ticket`.
+
+    A recorded worktree that is gone is refused, not swapped for the clone (#46): `implement` run in the main checkout is worse than not running.
     """
+    path = _planned_workdir(cfg, ticket)
+    if ticket.get("worktree") and not path.is_dir():
+        key = ticket["key"]
+        raise StepError(
+            f"{key}: recorded worktree {path} is not a directory. "
+            f"Recreate it, or run `ticket refresh {key}` with a refresh entry that announces where it is now."
+        )
+    return path
+
+
+def _planned_workdir(cfg: Config, ticket: dict) -> Path:
+    """`workdir` without the existence check, for the environment: refresh runs its entries with this env to repair a dead worktree, so building it must not refuse one."""
     if ticket.get("worktree"):
         return Path(ticket["worktree"])
-    return cfg.repo_path(ticket.get("repo", "")) or cfg.root
+    return cfg.repo_path(known_repo(cfg, ticket)) or cfg.root
+
+
+def known_repo(cfg: Config, ticket: dict) -> str:
+    """The row's repo, refused when the config declares `repos:` and this is not one of them (#42).
+
+    Otherwise the miss is an unset `TICKET_REPO_PATH` and a step running in the config directory, and the first to notice is whichever script reads the variable.
+    A config with no `repos:` has no names to miss, so any repo passes.
+    """
+    repo = ticket.get("repo", "")
+    if is_unknown_repo(cfg, repo):
+        raise StepError(unknown_repo(cfg, repo, ticket["key"]))
+    return repo
+
+
+def is_unknown_repo(cfg: Config, repo: str) -> bool:
+    return bool(repo and cfg.repos and repo not in cfg.repos)
+
+
+def unknown_repo(cfg: Config, repo: str, key: str) -> str:
+    """What `known_repo` refuses with and `track` warns with: the row's value and the keys it could have matched."""
+    return (
+        f"{key} names repo {repo!r}, which is not in repos: ({', '.join(sorted(cfg.repos))}). "
+        f"Add it there, or re-point the ticket with: ticket track {key} --repo <repo>"
+    )
 
 
 def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
-    repo = ticket.get("repo", "")
+    repo = known_repo(cfg, ticket)
     env = dict(os.environ)
     env["TICKET_KEY"] = ticket["key"]
     env["TICKET_REPO"] = repo
@@ -57,7 +96,7 @@ def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
     env["TICKET_BRANCH"] = cfg.worktrees.branch_for(ticket["key"], repo)
     env["TICKET_USE_WORKTREES"] = "1" if cfg.worktrees.enabled else "0"
     env["TICKET_WORKTREE_ROOT"] = str(cfg.worktrees.root)
-    env["TICKET_WORKTREE"] = str(workdir(cfg, ticket))
+    env["TICKET_WORKTREE"] = str(_planned_workdir(cfg, ticket))
     repo_path = cfg.repo_path(repo)
     if repo_path:
         env["TICKET_REPO_PATH"] = str(repo_path)
@@ -291,6 +330,8 @@ def run_step(
         return StepResult("parked")
 
     argv, stdin_text = _argv(cfg, step)
+    # Before the dry-run and the fetch: a dry run that says "would run" for a step that cannot start is a lie, and a fetch into a missing directory is the same fault told worse.
+    cwd = workdir(cfg, ticket)
     if dry_run:
         print(f"[dry-run] would run {step.id}: {' '.join(argv[:2])}")
         # Not "done": nothing ran and nothing was written, and a caller that
@@ -309,7 +350,7 @@ def run_step(
     try:
         output, exit_code = tee(
             argv,
-            cwd=workdir(cfg, ticket),
+            cwd=cwd,
             env=step_env(cfg, ticket),
             stdin_text=stdin_text,
             log=log_file,

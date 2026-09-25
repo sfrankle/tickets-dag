@@ -266,6 +266,12 @@ def cmd_track(args) -> int:
     ctx.store.write_ticket(ticket)
     if ticket["repo"]:
         print(f"tracking {key} in {ticket['repo']}")
+        # Passed through, since `gh` needs a typo to arrive as the typo, but said now: this is the moment the value enters state, and every step on it will refuse (#42).
+        if steps_module.is_unknown_repo(ctx.cfg, ticket["repo"]):
+            print(
+                f"warning: {steps_module.unknown_repo(ctx.cfg, ticket['repo'], key)}",
+                file=sys.stderr,
+            )
         return 0
     # Not an error: a row with no repo is a ticket you can still `refresh`, retitle or point by hand, and failing here would strand it unwritten.
     print(f"tracking {key}")
