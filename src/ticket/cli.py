@@ -14,6 +14,7 @@ There is no per-key registration, and every verb here resolves a stage name agai
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -1377,6 +1378,12 @@ def _raise_interrupted(signum, _frame):
     raise steps_module.Interrupted(signum)
 
 
+def _say_stopped(signum: int) -> None:
+    # After SIGHUP the terminal is gone and the write can fail with EIO; the exit status still says what happened.
+    with contextlib.suppress(OSError):
+        print(f"stopped by {signal.Signals(signum).name}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one verb, turning a request to stop into an unwind rather than an abrupt exit."""
     # `signal.signal` is main-thread only, and a caller on another thread keeps whatever handling it had.
@@ -1388,10 +1395,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
     except steps_module.Interrupted as exc:
-        print(f"stopped by {signal.Signals(exc.signum).name}", file=sys.stderr)
+        _say_stopped(exc.signum)
         return 128 + exc.signum
     except KeyboardInterrupt:
-        print("stopped by SIGINT", file=sys.stderr)
+        _say_stopped(signal.SIGINT)
         return 128 + signal.SIGINT
     finally:
         for signum, handler in previous.items():
