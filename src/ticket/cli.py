@@ -675,6 +675,7 @@ def cmd_resolve(args) -> int:
     ticket = load_ticket(ctx, args.key)
     pr_ref = pick_pr(ctx, ticket, args)
     if args.dry_run:
+        fix_module.check_resolve(ctx.store, pr_ref, args.finding)
         print(f"[dry-run] would close {args.finding} as resolved")
         return 0
     fix_module.resolve(

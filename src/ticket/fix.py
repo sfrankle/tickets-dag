@@ -371,9 +371,7 @@ def resolve(
     A wontfix can become resolved, since that is someone changing their mind, but a finding already resolved is refused so the commit the scan recorded is not overwritten.
     """
     doc = store.read_findings(pr_ref)
-    finding = _find(doc, finding_id)
-    if finding.get("status") == "resolved":
-        raise TicketError(f"{finding_id} is already resolved")
+    finding = _resolvable(doc, finding_id)
     finding["status"] = "resolved"
     finding["by"] = "hand"
     # A wontfix's reason explains a decision that no longer stands.
@@ -383,6 +381,18 @@ def resolve(
     if note:
         finding["reason"] = note
     store.write_findings(doc)
+
+
+def check_resolve(store: Store, pr_ref: str, finding_id: str) -> None:
+    """Refuse what `resolve` would refuse, without writing, so a dry run answers the way the real run will."""
+    _resolvable(store.read_findings(pr_ref), finding_id)
+
+
+def _resolvable(doc: dict, finding_id: str) -> dict:
+    finding = _find(doc, finding_id)
+    if finding.get("status") == "resolved":
+        raise TicketError(f"{finding_id} is already resolved")
+    return finding
 
 
 def set_effort(store: Store, pr_ref: str, finding_id: str, value: str) -> None:
