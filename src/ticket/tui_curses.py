@@ -163,13 +163,33 @@ def tail(store: Store, recorded: str | None) -> tuple[str, ...]:
 
 
 def key_name(key: str | int) -> str:
-    """One string for the reducer, whichever of the two shapes curses returned.
+    """One string for the reducer, whichever of the shapes curses returned.
 
     `get_wch` gives a `str` for anything typed and an `int` for a keypad code, and `keyname` turns the second into the `KEY_DOWN` spelling `tui.py` already matches on.
+    `getch` gives an `int` for both, so an ASCII code becomes its character rather than a `keyname` spelling: the reducer matches Enter, Tab and Escape as `"\n"`, `"\t"` and `"\x1b"`, not as `^J`, `^I` and `^[`.
     """
     if isinstance(key, str):
         return key
+    if key < 128:
+        return chr(key)
     return curses.keyname(key).decode(errors="replace")
+
+
+def read_key(screen) -> str | None:
+    """The next key as the reducer spells it, or `None` when the poll timer expired.
+
+    `get_wch` is there only when the interpreter's `_curses` was linked against `ncursesw`, and the python.org macOS framework build is not (#27), so fall back to `getch`.
+    The fallback reads a byte at a time and cannot spell a multi-byte character, which costs nothing the reducer reads: every key it matches on is ASCII or a keypad code, and anything else lands as an unprintable name it already ignores.
+    """
+    if hasattr(screen, "get_wch"):
+        try:
+            return key_name(screen.get_wch())
+        except curses.error:
+            # The timer expiring, which is the common case and no work.
+            return None
+    pressed = screen.getch()
+    # `getch` reports the same expiry as -1 rather than by raising.
+    return None if pressed == -1 else key_name(pressed)
 
 
 def paint(screen, lines: list[str]) -> None:
@@ -232,12 +252,10 @@ def loop(screen, ctx: view.Context) -> None:
             paint(screen, tui.render(state, rows, width, height))
             painted = frame
 
-        try:
-            pressed = screen.get_wch()
-        except curses.error:
-            # The 1s timer expiring, which is the common case and no work.
+        pressed = read_key(screen)
+        if pressed is None:
             continue
-        state, commands = tui.handle_key(state, rows, key_name(pressed))
+        state, commands = tui.handle_key(state, rows, pressed)
         for command in commands:
             child, err = spawn(store, command)
             if command.key:
