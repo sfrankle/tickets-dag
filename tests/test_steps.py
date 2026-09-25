@@ -281,10 +281,7 @@ def interrupt_after():
     """Raise `Interrupted` in the test's own thread after a delay, the way `cli.main`'s handler does on SIGTERM."""
 
     def arm(seconds: float) -> None:
-        def handler(signum, _frame):
-            raise Interrupted(signum)
-
-        signal.signal(signal.SIGALRM, handler)
+        signal.signal(signal.SIGALRM, steps.raise_interrupted)
         signal.setitimer(signal.ITIMER_REAL, seconds)
 
     previous = signal.getsignal(signal.SIGALRM)
@@ -360,16 +357,13 @@ def sigterm_at():
     """Send this process SIGTERM at each delay, with the handler `cli.main` installs."""
     timers: list[threading.Timer] = []
 
-    def handler(signum, _frame):
-        raise Interrupted(signum)
-
     def arm(*seconds: float) -> None:
         for delay in seconds:
             timer = threading.Timer(delay, os.kill, (os.getpid(), signal.SIGTERM))
             timers.append(timer)
             timer.start()
 
-    previous = signal.signal(signal.SIGTERM, handler)
+    previous = signal.signal(signal.SIGTERM, steps.raise_interrupted)
     yield arm
     for timer in timers:
         timer.cancel()

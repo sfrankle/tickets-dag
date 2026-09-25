@@ -91,28 +91,33 @@ class Interrupted(BaseException):
         self.signum = signum
 
 
-# Signals that would end `ticket` part way through stopping a step: `KeyboardInterrupt` for SIGINT, and `Interrupted` for the others once `cli.main` has installed its handler.
-STOPPING_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+# Signals whose default action ends the process without unwinding, which would skip the lock's `finally` and leave a running step's child orphaned (#43).
+# SIGINT is not here: Python already raises `KeyboardInterrupt` for it.
+UNWINDING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+# Every request to stop: `KeyboardInterrupt` for SIGINT, and `Interrupted` for the others while `raise_interrupted` handles them.
+STOPPING_SIGNALS = (signal.SIGINT, *UNWINDING_SIGNALS)
+
+
+def raise_interrupted(signum, _frame):
+    raise Interrupted(signum)
 
 
 @contextmanager
-def _deaf() -> Iterator[None]:
-    """Ignore further requests to stop while a stop is already under way.
+def handling(signums, handler) -> Iterator[None]:
+    """Handle `signums` with `handler` for the duration, then put back what was there.
 
-    An impatient second Ctrl-C, or a supervisor repeating its SIGTERM, would otherwise raise out of the grace wait before SIGKILL is sent, and a step that ignores SIGTERM would run on.
     `signal.signal` is main-thread only, and elsewhere the handling is left as it was.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
         return
-    previous = {
-        signum: signal.signal(signum, signal.SIG_IGN) for signum in STOPPING_SIGNALS
-    }
+    previous = {signum: signal.signal(signum, handler) for signum in signums}
     try:
         yield
     finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+        for signum, old in previous.items():
+            signal.signal(signum, old)
 
 
 def _signal_group(pgid: int, signum: int) -> None:
@@ -129,7 +134,8 @@ def stop(process: subprocess.Popen) -> None:
 
     `process` leads its own group (`tee` starts it with `process_group=0`), so the group id is its pid and a grandchild it forked goes too.
     """
-    with _deaf():
+    # Deaf to further requests to stop while this one is under way: an impatient second Ctrl-C, or a supervisor repeating its SIGTERM, would otherwise raise out of the grace wait before SIGKILL is sent, and a step that ignores SIGTERM would run on.
+    with handling(STOPPING_SIGNALS, signal.SIG_IGN):
         _signal_group(process.pid, signal.SIGTERM)
         # A member stopped by the terminal holds SIGTERM pending until it is continued.
         _signal_group(process.pid, signal.SIGCONT)
@@ -224,7 +230,12 @@ def tee(
     )
     lines: list[str] = []
     try:
-        with _foreground(process) as handed:
+        # buffering=1 is line buffering, so an interrupted run keeps what it printed
+        # and a reader tailing the file sees each line as the step prints it.
+        with (
+            _foreground(process) as handed,
+            open(log, "w", buffering=1) if log is not None else nullcontext() as handle,
+        ):
             # Inside the `try`: a prompt larger than the pipe blocks here until the child reads it, and a signal that lands meanwhile must still stop the child.
             try:
                 if stdin_text is not None:
@@ -234,18 +245,11 @@ def tee(
                 # The child exited without reading its prompt. Its output and exit code
                 # below are the real story; the failed write is not.
                 pass
-            # buffering=1 is line buffering, so an interrupted run keeps what it printed
-            # and a reader tailing the file sees each line as the step prints it.
-            with (
-                open(log, "w", buffering=1)
-                if log is not None
-                else nullcontext() as handle
-            ):
-                for line in process.stdout:
-                    lines.append(line)
-                    sys.stdout.write(line)
-                    if handle is not None:
-                        handle.write(line)
+            for line in process.stdout:
+                lines.append(line)
+                sys.stdout.write(line)
+                if handle is not None:
+                    handle.write(line)
             exit_code = process.wait()
         # Without the terminal, Ctrl-C reached `ticket` itself, and a step exiting 130 is only a step exiting 130.
         if handed and exit_code in INTERRUPTED_EXITS:
@@ -259,32 +263,6 @@ def tee(
 def release_gate(store: Store, ticket: dict, step_id: str) -> None:
     ticket.setdefault("steps", {})[step_id] = {"status": "released", "at": now()}
     store.write_ticket(ticket)
-
-
-def _register(ticket: dict, record: dict, output: str) -> str | None:
-    """Register the PR and worktree a step's output announces, on `ticket` and against its `record`. Returns the PR."""
-    pr_ref = None
-    match = PR_LINE.search(output)
-    if match:
-        pr_ref = match.group(1)
-        prs = ticket.setdefault("prs", [])
-        if pr_ref not in prs:
-            prs.append(pr_ref)
-        # A registration is the one thing the store knows for certain about
-        # which PR is being worked: the step just opened it. Leaving the
-        # pointer where it was would dispatch every later review, fix and
-        # collect at the PR the run just walked away from, while announcing
-        # the new one — and nothing but a hand-typed `--pr` could reach it.
-        ticket["active"] = pr_ref
-        # Recorded against the step so `ticket reset` can undo it without any
-        # step id being hardcoded in the engine.
-        record["registered_pr"] = pr_ref
-
-    worktree_match = WORKTREE_LINE.search(output)
-    if worktree_match:
-        ticket["worktree"] = worktree_match.group(1)
-        record["registered_worktree"] = worktree_match.group(1)
-    return pr_ref
 
 
 def run_step(
@@ -313,6 +291,7 @@ def run_step(
             print(f"sync: {reason}")
 
     log_file = store.log_path(ticket["key"], step.id)
+    stopped: BaseException | None = None
     try:
         output, exit_code = tee(
             argv,
@@ -321,23 +300,12 @@ def run_step(
             stdin_text=stdin_text,
             log=log_file,
         )
-    except (KeyboardInterrupt, Interrupted):
+    except (KeyboardInterrupt, Interrupted) as exc:
         # `tee` has already stopped the child, and the log holds what it printed.
-        # Recorded as a failure so `next` runs it again, and marked so `show` can tell a stopped step from a broken one.
-        stopped = {
-            "status": "failed",
-            "interrupted": True,
-            "at": now(),
-            "log": store.relative(log_file),
-        }
         # A PR the step announced before it was stopped is open all the same, and a rerun that did not know it would open another.
-        printed = ""
+        stopped, output, exit_code = exc, "", None
         with suppress(OSError):
-            printed = log_file.read_text()
-        _register(ticket, stopped, printed)
-        ticket.setdefault("steps", {})[step.id] = stopped
-        store.write_ticket(ticket)
-        raise
+            output = log_file.read_text()
     except OSError as exc:
         # Nothing ever started, so `tee` wrote no file. This branch owns the log.
         output = f"could not execute {argv[0]}: {exc}\n"
@@ -347,7 +315,37 @@ def run_step(
     # Recorded relative to the store root, so the pointer survives the store being moved; `StepResult.log` stays absolute because it is printed for a human to open.
     record: dict = {"status": "done", "at": now(), "log": store.relative(log_file)}
 
-    pr_ref = _register(ticket, record, output)
+    pr_ref = None
+    match = PR_LINE.search(output)
+    if match:
+        pr_ref = match.group(1)
+        prs = ticket.setdefault("prs", [])
+        if pr_ref not in prs:
+            prs.append(pr_ref)
+        # A registration is the one thing the store knows for certain about
+        # which PR is being worked: the step just opened it. Leaving the
+        # pointer where it was would dispatch every later review, fix and
+        # collect at the PR the run just walked away from, while announcing
+        # the new one — and nothing but a hand-typed `--pr` could reach it.
+        ticket["active"] = pr_ref
+        # Recorded against the step so `ticket reset` can undo it without any
+        # step id being hardcoded in the engine.
+        record["registered_pr"] = pr_ref
+
+    worktree_match = WORKTREE_LINE.search(output)
+    if worktree_match:
+        ticket["worktree"] = worktree_match.group(1)
+        record["registered_worktree"] = worktree_match.group(1)
+
+    if stopped is not None:
+        # Recorded as a failure so `next` runs it again, and marked so `show` can tell a stopped step from a broken one.
+        ticket.setdefault("steps", {})[step.id] = {
+            **record,
+            "status": "failed",
+            "interrupted": True,
+        }
+        store.write_ticket(ticket)
+        raise stopped
 
     if exit_code == 0:
         ticket.setdefault("steps", {})[step.id] = record

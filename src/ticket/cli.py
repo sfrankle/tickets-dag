@@ -21,7 +21,6 @@ import re
 import shutil
 import signal
 import sys
-import threading
 from pathlib import Path
 
 from . import collect as collect_module
@@ -1369,15 +1368,6 @@ def _unswap(args, cfg, store: Store) -> None:
     )
 
 
-# Signals whose default action ends the process without unwinding, which would skip the lock's `finally` and leave a running step's child orphaned (#43).
-# SIGINT is not here: Python already raises `KeyboardInterrupt` for it.
-STOPPING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
-
-
-def _raise_interrupted(signum, _frame):
-    raise steps_module.Interrupted(signum)
-
-
 def _say_stopped(signum: int) -> None:
     # After SIGHUP the terminal is gone and the write can fail with EIO; the exit status still says what happened.
     with contextlib.suppress(OSError):
@@ -1386,23 +1376,15 @@ def _say_stopped(signum: int) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Run one verb, turning a request to stop into an unwind rather than an abrupt exit."""
-    # `signal.signal` is main-thread only, and a caller on another thread keeps whatever handling it had.
-    if threading.current_thread() is not threading.main_thread():
-        return _main(argv)
-    previous = {
-        signum: signal.signal(signum, _raise_interrupted) for signum in STOPPING_SIGNALS
-    }
     try:
-        return _main(argv)
-    except steps_module.Interrupted as exc:
-        _say_stopped(exc.signum)
-        return 128 + exc.signum
-    except KeyboardInterrupt:
-        _say_stopped(signal.SIGINT)
-        return 128 + signal.SIGINT
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+        with steps_module.handling(
+            steps_module.UNWINDING_SIGNALS, steps_module.raise_interrupted
+        ):
+            return _main(argv)
+    except (steps_module.Interrupted, KeyboardInterrupt) as exc:
+        signum = getattr(exc, "signum", signal.SIGINT)
+        _say_stopped(signum)
+        return 128 + signum
 
 
 def _main(argv: list[str] | None) -> int:
