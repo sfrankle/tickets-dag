@@ -8,6 +8,7 @@
           api_115_findings.json          that PR's findings
           logs/                          one file per run
       locks/
+      refresh/                           one log per `ticket refresh` run
 
 Everything one ticket knows is in one directory, so a ticket can be read, archived or deleted by looking at a single place.
 A store written by an older version is type-grouped (`tickets/KEY.json`, `prs/`, `findings/`, `logs/KEY/`); it is migrated in place the first time a `Store` is opened on it.
@@ -139,12 +140,11 @@ class Store:
 
     # --- logs ----------------------------------------------------------
 
-    def _fresh_log(self, key: str, stem: str, suffix: str) -> Path:
-        """A file under the ticket's own `logs/` that nothing is already using.
+    def _fresh_file(self, directory: Path, stem: str, suffix: str) -> Path:
+        """A file in `directory` that nothing is already using.
 
         The stamp and the collision walk live here rather than at each caller, so the #27 layout is changed in one place.
         """
-        directory = self.ticket_dir(key) / "logs"
         directory.mkdir(parents=True, exist_ok=True)
         started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         path = directory / f"{stem}-{started}{suffix}"
@@ -153,6 +153,10 @@ class Store:
             attempt += 1
             path = directory / f"{stem}-{started}-{attempt}{suffix}"
         return path
+
+    def _fresh_log(self, key: str, stem: str, suffix: str) -> Path:
+        """A file under the ticket's own `logs/` that nothing is already using."""
+        return self._fresh_file(self.ticket_dir(key) / "logs", stem, suffix)
 
     def log_path(self, key: str, step: str) -> Path:
         """A fresh file for this run, under the ticket's own `logs/`.
@@ -167,6 +171,14 @@ class Store:
         The TUI spawns `ticket` as a detached child (#37), and this file is the only place an immediate crash can announce itself: the child dies before the engine has written anything, so without it the row simply never starts and says nothing about why.
         """
         return self._fresh_log(key, "spawn", ".err")
+
+    def refresh_log_path(self) -> Path:
+        """A fresh file for one `ticket refresh` run, keyed or not (#8).
+
+        One file per run rather than per ticket: the run is what a morning refresh is read as, and a refresh of every ticket would otherwise leave one file per ticket per entry.
+        Under `refresh/`, not a root-level `logs/`, which `migrate` reads as the pre-#27 layout.
+        """
+        return self._fresh_file(self.root / "refresh", "refresh", ".log")
 
     def relative(self, path: Path) -> str:
         """How a path is recorded in state: relative to the store root.
@@ -323,28 +335,32 @@ class Store:
             taken_at = path.stat().st_mtime
         except OSError:
             return None
+        pid, verb = _lock_record(path)
         return LockStatus(
-            pid=_lock_pid(path),
+            pid=pid,
             taken_at=_stamp(datetime.fromtimestamp(taken_at, UTC)),
+            verb=verb,
         )
 
     def clear_lock(self, key: str) -> None:
         self.lock_path(key).unlink(missing_ok=True)
 
     @contextmanager
-    def lock(self, key: str):
+    def lock(self, key: str, verb: str | None = None):
         path = self.lock_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            raise StoreError(
+            raise LockHeld(
                 f"{key} is locked by another run ({path}). "
-                f"Run `ticket unlock {key}` to clear it if that run died."
+                f"Run `ticket unlock {key}` to clear it if that run died.",
+                self.lock_status(key),
             ) from None
         try:
             try:
-                os.write(fd, f"{os.getpid()}\n".encode())
+                # The verb on the second line is what lets a reader say "refreshing" rather than guess the holder is running `next` (#8).
+                os.write(fd, f"{os.getpid()}\n{verb or ''}\n".encode())
             finally:
                 os.close(fd)
             yield
@@ -355,27 +371,42 @@ class Store:
 # --- locking helpers ------------------------------------------------------
 
 
+class LockHeld(StoreError):
+    """`lock` found the file already there; `status` says whose, so a caller can tell a busy run from a dead one without reading the file a second time."""
+
+    def __init__(self, message: str, status: LockStatus | None):
+        super().__init__(message)
+        self.status = status
+
+
 @dataclass(frozen=True)
 class LockStatus:
     pid: int | None
     taken_at: str
+    verb: str | None = None
 
     @property
     def alive(self) -> bool:
         return self.pid is not None and _alive(self.pid)
 
 
-def _lock_pid(path: Path) -> int | None:
-    """The pid a lock file records, or `None` if it does not record a usable one.
+def _lock_record(path: Path) -> tuple[int | None, str | None]:
+    """The pid and verb a lock file records; `None` for whichever it does not.
 
     A run killed between creating the file and writing its pid leaves it empty.
-    Unknown is not the same as alive: the file is stale either way, and reading
-    it as a live holder would make the one verb that clears it refuse forever.
+    Unknown is not the same as alive: the file is stale either way, and reading it as a live holder would make the one verb that clears it refuse forever.
+    A file written before the verb was recorded holds the pid alone, and reads as verb unknown.
     """
     try:
-        return int(path.read_text().strip())
-    except (OSError, ValueError):
-        return None
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None, None
+    try:
+        pid = int(lines[0].strip()) if lines else None
+    except ValueError:
+        pid = None
+    verb = lines[1].strip() if len(lines) > 1 and lines[1].strip() else None
+    return pid, verb
 
 
 def _alive(pid: int) -> bool:

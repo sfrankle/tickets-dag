@@ -10,7 +10,7 @@ Building them here rather than through a store keeps these tests about the scree
 import ast
 from pathlib import Path
 
-from ticket import tui
+from ticket import tui, view
 from ticket.tui import HELP_ENTRIES, Command, State, contextual, handle_key, render
 
 # `Tab` and `ENTER` are named in the help pane and typed as control characters.
@@ -214,6 +214,22 @@ def test_enter_on_a_running_row_emits_nothing():
     _, commands = handle_key(State(), [row], "\n")
     assert commands == []
     assert contextual(State(), [row]).command is None
+
+
+REFRESHING = view.running(4823, "x", None, view.REFRESH)
+
+
+def test_a_refreshing_row_says_refreshing_and_disables_enter():
+    row = make_row("ABC-123", running=REFRESHING)
+    line = contextual(State(), [row])
+    assert line.command is None
+    assert "refreshing" in line.label
+
+
+def test_a_refreshing_row_does_not_mark_the_next_step_running():
+    row = make_row("ABC-123", running=REFRESHING)
+    screen = "\n".join(render(State(), [row], 120, 40))
+    assert "running" not in screen
 
 
 def test_enter_collects_and_fixes_by_the_resolver_s_answer():

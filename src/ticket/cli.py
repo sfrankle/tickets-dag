@@ -18,14 +18,13 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import signal
 import sys
-from pathlib import Path
 
 from . import collect as collect_module
 from . import fix as fix_module
 from . import gh, view
+from . import refresh as refresh_module
 from . import reviews as reviews_module
 from . import steps as steps_module
 from .config import Config, RepoGuess, config_path, load_config
@@ -111,8 +110,11 @@ def print_row(ctx: Context, key: str, as_json: bool) -> int:
     )
     if row["running"]:
         log = f"  {row['running']['log']}" if row["running"]["log"] else ""
+        label = (
+            "refreshing" if row["running"].get("verb") == view.REFRESH else "running"
+        )
         print(
-            f"running: pid {row['running']['pid']} since {row['running']['since']}{log}"
+            f"{label}: pid {row['running']['pid']} since {row['running']['since']}{log}"
         )
     elif row["lock"] == "stale":
         # The one place a stale lock is reported before it breaks something: otherwise it surfaces as the next run refusing to take the lock.
@@ -224,22 +226,6 @@ def downstream(cfg: Config, step_id: str) -> list[str]:
 # --- commands -------------------------------------------------------------
 
 
-def fetch_summary(ctx: Context, key: str, *, dry_run: bool = False) -> str | None:
-    """Ask the configured tracker for this ticket's title, or `None` if it cannot.
-
-    No tracker configured, or one whose CLI is not installed on this machine, is the ordinary case rather than an error: the summary is a convenience, and both callers have a job to finish without it.
-    Persisting is the caller's, so neither of them writes the row twice.
-    """
-    argv = ctx.cfg.tracker.summary_argv(key)
-    if not argv or not shutil.which(argv[0]):
-        return None
-    if dry_run:
-        print(f"[dry-run] would refresh {key} summary from {argv[0]}")
-        return None
-    summary = gh.run(argv, retries=1)
-    return summary.strip().splitlines()[0] if summary.strip() else ""
-
-
 def _guess_repo(ctx: Context, ticket: dict) -> RepoGuess:
     """Which repo a ticket is about, read out of its summary.
 
@@ -250,7 +236,7 @@ def _guess_repo(ctx: Context, ticket: dict) -> RepoGuess:
     if not ctx.cfg.inference.patterns:
         return ctx.cfg.infer_repo(ticket["summary"])
     try:
-        summary = fetch_summary(ctx, ticket["key"])
+        summary = refresh_module.fetch_summary(ctx.cfg, ticket["key"])
     except GhError as exc:
         print(f"warning: {exc}", file=sys.stderr)
         return RepoGuess(None, "the tracker did not answer")
@@ -782,41 +768,20 @@ def cmd_unlock(args) -> int:
     return 0
 
 
-def _refresh_one(ctx: Context, ticket: dict, dry_run: bool = False) -> None:
-    # Refresh is the one verb whose whole job is being in sync, so it fetches
-    # first and reports what it could not fast-forward. Sync/fetch runs even
-    # under --dry-run (decision #22: dry-run gates writes and model calls,
-    # not sync); only the store writes and the jira shell-out are skipped.
-    if ctx.cfg.sync and ticket.get("worktree"):
-        reason = gh.sync(Path(ticket["worktree"]))
-        print(
-            f"{ticket['key']} sync: {reason}" if reason else f"{ticket['key']} synced"
-        )
-    pr_ref = active_pr(ticket)
-    if pr_ref:
-        pr = reviews_module.ensure_pr(ctx.store, ticket, pr_ref)
-        pr["head"] = gh.pr_head(pr_ref)
-        if dry_run:
-            print(f"[dry-run] would write pr {pr_ref} (head {pr['head']})")
-        else:
-            ctx.store.write_pr(pr)
-    summary = fetch_summary(ctx, ticket["key"], dry_run=dry_run)
-    if summary is not None:
-        ticket["summary"] = summary
-        ctx.store.write_ticket(ticket)
-
-
 def cmd_refresh(args) -> int:
     ctx = Context.load(no_sync=getattr(args, "no_sync", False))
     if args.key:
-        _refresh_one(ctx, load_ticket(ctx, args.key), dry_run=args.dry_run)
-        print(f"refreshed {args.key}")
-        return 0
-    for ticket in ctx.store.list_tickets():
-        if ticket.get("tracked"):
-            _refresh_one(ctx, ticket, dry_run=args.dry_run)
-    print("refreshed every tracked row")
-    return 0
+        load_ticket(ctx, args.key)  # the "not tracked" error, before any log is opened
+        code = refresh_module.refresh_one(
+            ctx.cfg, ctx.store, args.key, dry_run=args.dry_run
+        )
+        if code == 0:
+            print(f"refreshed {args.key}")
+        return code
+    code = refresh_module.refresh_all(ctx.cfg, ctx.store, dry_run=args.dry_run)
+    if code == 0:
+        print("refreshed every tracked row")
+    return code
 
 
 def cmd_reset(args) -> int:
@@ -950,6 +915,10 @@ def config_problems(cfg: Config) -> list[str]:
         check("fix.easy", "run", cfg.fix.easy_run, executable=True)
     if cfg.fix.hard_prompt:
         check("fix.hard", "prompt", cfg.fix.hard_prompt)
+    # `refresh:` entries are scripts the config ships, like a step's `run:`, and a missing one breaks the morning refresh rather than any one ticket.
+    for name, runs in (("queue", cfg.refresh.queue), ("ticket", cfg.refresh.ticket)):
+        for run in runs:
+            check(f"refresh.{name}", "run", run, executable=True)
     return problems
 
 
@@ -1424,7 +1393,7 @@ def _main(argv: list[str] | None) -> int:
         writing = args.verb in WRITE_VERBS
         if writing and key and not getattr(args, "dry_run", False):
             store = Store(load_config().store)
-            with store.lock(key):
+            with store.lock(key, verb=args.verb):
                 return _dispatch(args, locked=True)
         return _dispatch(args, locked=False)
     except TicketError as exc:

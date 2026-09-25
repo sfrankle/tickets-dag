@@ -525,7 +525,46 @@ def test_an_unreadable_pid_is_not_taken_for_a_live_run(store):
     assert status.alive is False
 
 
+def test_a_lock_records_the_verb_holding_it(store):
+    with store.lock("ABC-123", verb="refresh"):
+        status = store.lock_status("ABC-123")
+    assert status.pid == os.getpid()
+    assert status.verb == "refresh"
+
+
+def test_a_lock_taken_without_a_verb_records_none(store):
+    with store.lock("ABC-123"):
+        assert store.lock_status("ABC-123").verb is None
+
+
+def test_a_pid_only_lock_from_an_older_version_still_parses(store):
+    write_lock(store, f"{os.getpid()}\n")
+    status = store.lock_status("ABC-123")
+    assert status.pid == os.getpid()
+    assert status.alive is True
+    assert status.verb is None
+
+
 def test_clear_lock_removes_the_file(store):
     path = write_lock(store, "1\n")
     store.clear_lock("ABC-123")
     assert not path.exists()
+
+
+def test_a_refresh_log_lives_under_refresh_not_logs(store):
+    path = store.refresh_log_path()
+    assert path.parent == store.root / "refresh"
+    assert path.name.startswith("refresh-") and path.suffix == ".log"
+    assert not (store.root / "logs").exists()
+
+
+def test_two_refresh_logs_in_one_second_do_not_collide(store):
+    first = store.refresh_log_path()
+    first.write_text("x")
+    assert store.refresh_log_path() != first
+
+
+def test_a_refresh_directory_does_not_trigger_the_old_layout_migration(store):
+    store.refresh_log_path().write_text("x")
+    reopened = Store(store.root)
+    assert (reopened.root / "refresh").is_dir()

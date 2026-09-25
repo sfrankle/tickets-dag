@@ -181,12 +181,18 @@ def _prs(
     return entries
 
 
-def running(pid: int, since: str | None = None, log: str | None = None) -> dict:
+# The verb a refresh writes into each lock it takes, which is how a reader tells "refreshing" from a step running (#8).
+REFRESH = "refresh"
+
+
+def running(
+    pid: int, since: str | None = None, log: str | None = None, verb: str | None = None
+) -> dict:
     """The `running` field of a row, built in the one place that names its shape.
 
     The TUI has a second source for the same fact (#37: a run it spawned that the lock file has not caught up with), and a second untyped constructor over there would drift from this one.
     """
-    return {"pid": pid, "since": since, "log": log}
+    return {"pid": pid, "since": since, "log": log, "verb": verb}
 
 
 @dataclass(frozen=True)
@@ -204,7 +210,7 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock
     `held` and `stale` are the same file: the pid it records is what separates a run still working from one that died without releasing it.
     A stale lock is nobody's run, so there is no `running` to report and the path is the thing worth having — it is what a caller has to name to clear it, and today nothing but the failure of the next run mentions one at all.
 
-    What is running is the resolver's answer rather than anything the lock records: the file holds a pid and nothing else, and a live holder is by definition working on whatever `next` names.
+    What is running is the resolver's answer rather than anything the lock records: the file holds a pid and, since #8, the verb, and a live holder is by definition working on whatever `next` names.
     Only a step has a log, so a held lock over a review, collect or fix reports none.
     """
     status = ctx.store.lock_status(ticket["key"])
@@ -213,13 +219,14 @@ def _lock(ctx: Context, ticket: dict, action: Action, steps: list[dict]) -> Lock
     path = str(ctx.store.lock_path(ticket["key"]))
     if not status.alive:
         return Lock(running=None, state="stale", path=path)
+    # A refresh holds each ticket's lock for a few seconds and runs no step, so naming `next`'s step as running would be the view inventing a run (#8).
     log = (
         next((s["log"] for s in steps if s["id"] == action.target), None)
-        if action.kind == "step"
+        if action.kind == "step" and status.verb != REFRESH
         else None
     )
     return Lock(
-        running=running(status.pid, status.taken_at, log),
+        running=running(status.pid, status.taken_at, log, status.verb),
         state="held",
         path=path,
     )
