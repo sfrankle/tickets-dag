@@ -59,7 +59,7 @@ ticket                            # the queue, most recently updated first
 ticket ABC-123                    # one row: steps, next action, findings
 ticket track ABC-123               # the repo comes from the summary
 ticket track ABC-123 --repo acme/api            # ...or say it outright
-ticket refresh                    # fetch, fast-forward, and re-read every row
+ticket refresh                    # fetch, fast-forward, re-read, and run refresh: scripts for every row
 ticket next ABC-123               # run whatever the resolver says is next
 ticket next ABC-123 --pr 114      # ...against an older PR, from here on
 ticket reset ABC-123 implement    # re-run a step and everything below it
@@ -317,6 +317,28 @@ tracker:
 
 Leave it out and there is no lookup.
 A command whose binary is missing is skipped the same way — the summary is a convenience, and the rest of `refresh` still has to work.
+
+**`refresh:` is where catching up is yours.**
+`ticket refresh` does its own part — fetch, the PR head, the tracker summary — and then runs the scripts `refresh:` lists:
+
+```yaml
+refresh:
+  queue:                       # once per `ticket refresh` with no key, before any ticket
+    - run: input/scripts/jira-bulk-sync.sh
+  ticket:                      # for each tracked ticket, in order
+    - run: input/scripts/find-worktree.sh
+    - run: input/scripts/find-pr.sh
+```
+
+A `ticket` entry gets the same environment a step does, runs in the ticket's worktree if it is still there (else the clone, else the config directory), and can print `ticket-pr:` and `ticket-worktree:` like a step.
+`TICKET_RECORDED_WORKTREE` holds what the row recorded, so a script can repair a worktree that has moved.
+A PR the ticket already has does not move the active one, a worktree that does not exist is not recorded, and nothing an entry that failed printed is read.
+A `queue` entry gets only `TICKET_STORE` and `TICKET_CONFIG`, and `ticket refresh KEY` does not run it.
+
+A failing entry stops that ticket's later entries and the run moves on to the next ticket; a ticket another run is holding is skipped.
+Every line is prefixed with its ticket key or `queue`, the whole run is logged to `<store>/refresh/`, and the run ends with the list of what failed and exits 1 if anything did.
+A script that traps Ctrl-C and exits non-zero is just a failure, and the run carries on.
+`ticket reset` does not undo a PR or worktree an entry registered, because no step recorded it.
 
 **A key is a path.** It becomes a state file, a lock file, a log directory and a worktree directory, so the only shape the engine enforces is one safe path segment: no whitespace, no separator, no leading `-`.
 `ABC-123`, `4471` and `add-tracker-block` are all keys.

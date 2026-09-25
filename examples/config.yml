@@ -26,6 +26,15 @@ sync: true
 # tracker:
 #   summary: [jira, issue, view, "{key}", --plain]
 
+# Optional. Scripts `ticket refresh` runs after its own catch-up.
+# `queue` runs once per `ticket refresh` with no key; `ticket` runs for each tracked ticket, in order, and can print `ticket-pr:` and `ticket-worktree:` like a step.
+# The engine never defines these: point them at whatever keeps your tickets current.
+# refresh:
+#   queue:
+#     - run: input/scripts/jira-bulk-sync.sh
+#   ticket:
+#     - run: input/scripts/find-worktree.sh
+
 # Optional. House style for ticket keys, checked by `ticket track`. The engine
 # itself only refuses a key that would not survive being a file or directory
 # name, because that is what a key becomes.
