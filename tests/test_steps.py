@@ -220,6 +220,17 @@ def test_a_repo_the_config_does_not_know_is_refused_naming_both_sides(tmp_path):
         assert "api" in message.split("repos:", 1)[1]
 
 
+def test_a_live_worktree_does_not_hide_an_unknown_repo(tmp_path):
+    """`workdir` is the early check, so a dry run and a local review refuse what the real run would, and nothing is fetched first."""
+    cfg = config_with_repos(tmp_path, "api:\n    path: clone\n")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    ticket = ticket_doc()  # repo: acme/api
+    ticket["worktree"] = str(checkout)
+    with pytest.raises(StepError):
+        steps.workdir(cfg, ticket)
+
+
 def test_a_config_with_no_repos_block_runs_any_repo_in_its_own_directory(cfg):
     """`repos:` is optional (README), so a config without one has no set of names to miss."""
     assert steps.workdir(cfg, ticket_doc()) == cfg.root

@@ -45,7 +45,9 @@ def workdir(cfg: Config, ticket: dict) -> Path:
     `worktree.sh` runs `git worktree add`; neither works from `~/.ticket`.
 
     A recorded worktree that is gone is refused, not swapped for the clone (#46): `implement` run in the main checkout is worse than not running.
+    An unknown repo is refused here too (#42), worktree or not, because this is the check that runs before a dry run returns and before the fetch.
     """
+    known_repo(cfg, ticket)
     path = _planned_workdir(cfg, ticket)
     if ticket.get("worktree") and not path.is_dir():
         key = ticket["key"]
