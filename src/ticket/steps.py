@@ -90,15 +90,14 @@ def unknown_repo(cfg: Config, repo: str, key: str) -> str:
 
 
 def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
-    repo = known_repo(cfg, ticket)
+    values = placeholders(cfg, ticket)
+    repo = values["repo"]
     env = dict(os.environ)
-    env["TICKET_KEY"] = ticket["key"]
-    env["TICKET_REPO"] = repo
-    env["TICKET_STORE"] = str(cfg.store)
+    # TICKET_KEY, TICKET_REPO, TICKET_STORE and TICKET_WORKTREE are what `fill` puts in, so the two cannot drift.
+    env.update({f"TICKET_{name.upper()}": value for name, value in values.items()})
     env["TICKET_BRANCH"] = cfg.worktrees.branch_for(ticket["key"], repo)
     env["TICKET_USE_WORKTREES"] = "1" if cfg.worktrees.enabled else "0"
     env["TICKET_WORKTREE_ROOT"] = str(cfg.worktrees.root)
-    env["TICKET_WORKTREE"] = str(_planned_workdir(cfg, ticket))
     repo_path = cfg.repo_path(repo)
     if repo_path:
         env["TICKET_REPO_PATH"] = str(repo_path)
@@ -135,12 +134,24 @@ def fill(text: str, cfg: Config, ticket: dict) -> str:
     return PLACEHOLDER.sub(lambda match: values[match.group(1)], text)
 
 
+def claude_argv(
+    cfg: Config, ticket: dict, model: str, args: tuple[str, ...]
+) -> list[str]:
+    """`claude -p` for a session about `ticket`, its `args` filled: a handoff, a local review and a hard fix all start here, so none can skip the fill (#50)."""
+    return [
+        "claude",
+        "-p",
+        "--model",
+        cfg.model_id(model),
+        *(fill(arg, cfg, ticket) for arg in args),
+    ]
+
+
 def _argv(cfg: Config, step: Step, ticket: dict) -> tuple[list[str], str | None]:
     """(argv, stdin). Prompts go on stdin, never argv — decision #21."""
     if step.kind == "script":
         return [str(cfg.path_to(step.run))], None
-    args = [fill(arg, cfg, ticket) for arg in step.args]
-    argv = ["claude", "-p", "--model", cfg.model_id(step.model), *args]
+    argv = claude_argv(cfg, ticket, step.model, step.args)
     return argv, fill(cfg.path_to(step.prompt).read_text(), cfg, ticket)
 
 

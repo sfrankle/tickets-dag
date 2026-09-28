@@ -267,13 +267,7 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     print(f"{finding['id']}: running a local session; this can take a while")
     try:
         completed = subprocess.run(
-            [
-                "claude",
-                "-p",
-                "--model",
-                cfg.model_id(cfg.fix.model),
-                *(steps.fill(arg, cfg, ticket) for arg in cfg.fix.args),
-            ],
+            steps.claude_argv(cfg, ticket, cfg.fix.model, cfg.fix.args),
             cwd=str(worktree),
             input=prompt,  # stdin, not argv — decision #21
             capture_output=True,
