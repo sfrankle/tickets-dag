@@ -110,12 +110,38 @@ def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
     return env
 
 
-def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
+# Only these names are filled, and every other brace passes through: prompts went to `claude` verbatim before #50, so JSON or a code sample in one is legal.
+PLACEHOLDER = re.compile(r"\{(key|repo|store|worktree)\}")
+
+
+def placeholders(cfg: Config, ticket: dict) -> dict[str, str]:
+    """What `fill` puts in, the same values as the `TICKET_*` variables of the same names."""
+    return {
+        "key": ticket["key"],
+        "repo": known_repo(cfg, ticket),
+        "store": str(cfg.store),
+        "worktree": str(_planned_workdir(cfg, ticket)),
+    }
+
+
+def fill(text: str, cfg: Config, ticket: dict) -> str:
+    """`text` with `{key}`, `{repo}`, `{store}` and `{worktree}` filled in, for everything the engine hands to `claude` itself (#50).
+
+    A session started with `--allowedTools` cannot read its environment: Claude Code refuses a shell expansion, and `printenv` is blocked where credentials live in the shell.
+    So a prompt that names `$TICKET_STORE` sends the model guessing, and an `--add-dir` naming the store had to be a literal path.
+    One pass, so a filled value that itself contains `{key}` is left as it is.
+    """
+    values = placeholders(cfg, ticket)
+    return PLACEHOLDER.sub(lambda match: values[match.group(1)], text)
+
+
+def _argv(cfg: Config, step: Step, ticket: dict) -> tuple[list[str], str | None]:
     """(argv, stdin). Prompts go on stdin, never argv — decision #21."""
     if step.kind == "script":
         return [str(cfg.path_to(step.run))], None
-    argv = ["claude", "-p", "--model", cfg.model_id(step.model), *step.args]
-    return argv, cfg.path_to(step.prompt).read_text()
+    args = [fill(arg, cfg, ticket) for arg in step.args]
+    argv = ["claude", "-p", "--model", cfg.model_id(step.model), *args]
+    return argv, fill(cfg.path_to(step.prompt).read_text(), cfg, ticket)
 
 
 # How long a stopped step gets to exit on SIGTERM before its group is killed outright.
@@ -331,7 +357,7 @@ def run_step(
     if step.kind == "gate":
         return StepResult("parked")
 
-    argv, stdin_text = _argv(cfg, step)
+    argv, stdin_text = _argv(cfg, step, ticket)
     # Before the dry-run and the fetch: a dry run that says "would run" for a step that cannot start is a lie, and a fetch into a missing directory is the same fault told worse.
     cwd = workdir(cfg, ticket)
     if dry_run:

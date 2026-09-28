@@ -369,6 +369,26 @@ def test_a_hard_fix_passes_the_fix_blocks_args(
     assert argv[-2:] == ["--permission-mode", "acceptEdits"]
 
 
+def test_a_hard_fix_gets_the_ticket_filled_in(cfg, store, worktree, fake_bin, tmp_path):
+    """`fix.hard` is the third place the engine starts `claude` itself, so it fills what a step fills (#50)."""
+    (tmp_path / "prompts" / "fix.md").write_text(
+        "{key} in {repo} at {worktree}: {summary}\n"
+    )
+    path = tmp_path / "with-fix.yml"
+    path.write_text(
+        CONFIG
+        + "  hard:\n    prompt: prompts/fix.md\n"
+        + '    args: [--add-dir, "{store}"]\n'
+    )
+    scoped = load_config(path)
+    seed(store, {"summary": "retry loop unbounded", "effort": "hard"})
+    fix_one(scoped, store, ticket_doc(worktree), "acme/api#115", "f01")
+    assert fake_bin.stdin_to("claude")[0] == (
+        f"ABC-123 in acme/api at {worktree}: retry loop unbounded\n"
+    )
+    assert fake_bin.calls_to("claude")[0][-2:] == ["--add-dir", str(scoped.store)]
+
+
 def test_a_hard_fix_refuses_a_dirty_tree(cfg, store, worktree, fake_bin):
     """One commit per finding: `git add -A` would sweep in unrelated work."""
     seed(store, {"summary": "retry loop unbounded", "effort": "hard"})

@@ -13,7 +13,7 @@ from pathlib import Path
 from . import gh
 from .config import Config, Review
 from .errors import TicketError
-from .steps import workdir
+from .steps import fill, workdir
 from .store import Store, now
 
 
@@ -43,11 +43,13 @@ def _run_local(cfg: Config, ticket: dict, review: Review, prompt_text: str) -> s
     model = cfg.model_id(review.model or cfg.default_model)
     # cwd matters: a review reads the diff, so it has to run in the checkout.
     # The prompt goes on stdin (decision #21).
+    # Filled here and not in `dispatch`: a bot review's prompt is a public PR comment, and a local store path has no place in one (#50).
+    args = [fill(arg, cfg, ticket) for arg in review.args]
     try:
         completed = subprocess.run(
-            ["claude", "-p", "--model", model, *review.args],
+            ["claude", "-p", "--model", model, *args],
             cwd=str(workdir(cfg, ticket)),
-            input=prompt_text,
+            input=fill(prompt_text, cfg, ticket),
             capture_output=True,
             text=True,
             check=False,

@@ -233,6 +233,16 @@ What to do next is recomputed on every call by `resolve.py`, a pure function of 
 The engine executes exactly three kinds of step: a **script** (`run:`), a **gate** (`gate: true`, advanced by `ticket release`), and a **handoff** (`model:` + `prompt:` + optional `args:` for agent mode, a Claude session).
 Everything else is a script or a prompt the config points at, so adding a step is a YAML edit.
 
+**Prompts and `args:` get the ticket filled in.** `{key}`, `{repo}`, `{store}` and `{worktree}` are replaced before `claude` starts, in a handoff step, a `local` review and a `hard` fix, with the same values as the `TICKET_*` variables of those names.
+A session restricted by `--allowedTools` cannot read its environment, so a prompt reads `Prove each criterion in {store}/tickets/{key}/criteria.txt` and a step's args read `[--add-dir, "{store}"]` (#50).
+Any other brace passes through untouched, so JSON in a prompt is safe.
+The exception is `fix.hard.prompt`, which was always a `str.format` template alongside the finding's `{summary}` and friends: there a literal brace is doubled, `{{`.
+A `bot` review's prompt is posted as a PR comment and is never filled, so no local path leaks into it.
+
+For a restricted step, prefer `--permission-mode dontAsk` to `acceptEdits`.
+Under `acceptEdits` a `claude -p` step that reaches an unlisted command waits about two minutes on a prompt nobody can answer, then refuses; `dontAsk` refuses at once.
+It does not approve edits by itself, so a step that writes files needs `Edit(...)` and `Write(...)` in its `--allowedTools`.
+
 Steps run **in the ticket's checkout**.
 `worktrees.enabled` decides whether that is a worktree of its own under `worktrees.root` or the clone itself on `worktrees.branch`; `worktree.sh` reads the setting and announces the path it chose.
 The engine only ever learns the path.
