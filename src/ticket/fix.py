@@ -215,11 +215,13 @@ def _fix_easy(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
         )
 
 
-def _hard_prompt(cfg: Config, finding: dict, ref: str) -> str:
+def _hard_prompt(cfg: Config, ticket: dict, finding: dict, ref: str) -> str:
     template = FIX_PROMPT
     if cfg.fix.hard_prompt:
         template = cfg.path_to(cfg.fix.hard_prompt).read_text()
+    # This template was always `str.format`, strict about unknown names, so the ticket's values join the finding's rather than going through `steps.fill` (#50).
     fields = {
+        **steps.placeholders(cfg, ticket),
         "id": finding["id"],
         "ref": ref,
         "where": f" in {finding['file']}" if finding.get("file") else "",
@@ -240,7 +242,7 @@ def _hard_prompt(cfg: Config, finding: dict, ref: str) -> str:
 def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     worktree = worktree_of(ticket)
     ref = finding_ref(pr_ref, finding["id"])
-    prompt = _hard_prompt(cfg, finding, ref)
+    prompt = _hard_prompt(cfg, ticket, finding, ref)
     # Sync first so the local session reads and commits against the same head
     # the PR shows (decision #22). This runs even on a dry run: a dry run
     # must not post/write, but it should still fetch to keep the checkout
@@ -265,7 +267,7 @@ def _fix_hard(cfg, store, ticket, pr_ref, finding, dry_run) -> None:
     print(f"{finding['id']}: running a local session; this can take a while")
     try:
         completed = subprocess.run(
-            ["claude", "-p", "--model", cfg.model_id(cfg.fix.model), *cfg.fix.args],
+            steps.claude_argv(cfg, ticket, cfg.fix.model, cfg.fix.args),
             cwd=str(worktree),
             input=prompt,  # stdin, not argv — decision #21
             capture_output=True,

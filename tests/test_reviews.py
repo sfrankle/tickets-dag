@@ -75,6 +75,30 @@ def test_local_dispatch_runs_claude_with_the_prompt(cfg, store, fake_bin):
     assert store.read_pr("acme/api#115")["dispatched"][0]["transport"] == "local"
 
 
+def test_a_local_review_gets_the_ticket_filled_in(cfg, store, fake_bin, tmp_path):
+    """The same fill as a step's (#50): a local review is `claude -p` in the checkout, just as restricted."""
+    (tmp_path / "prompts" / "reviews" / "architecture.md").write_text(
+        "Review {key} in {repo}; notes in {store}.\n"
+    )
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
+    dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("architecture"))
+    assert fake_bin.stdin_to("claude")[0] == (
+        f"Review ABC-123 in acme/api; notes in {cfg.store}.\n"
+    )
+
+
+def test_a_bot_review_prompt_is_posted_unfilled(cfg, store, fake_bin, tmp_path):
+    """A bot review is a public PR comment, and a local store path has no business in one."""
+    (tmp_path / "prompts" / "reviews" / "docs-tests.md").write_text(
+        "Notes live in {store}.\n"
+    )
+    fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
+    dispatch(cfg, store, ticket_doc(), "acme/api#115", cfg.review("docs-tests"))
+    comment = next(c for c in fake_bin.calls_to("gh") if c[1:3] == ["pr", "comment"])
+    assert "Notes live in {store}." in " ".join(comment)
+    assert str(cfg.store) not in " ".join(comment)
+
+
 def test_local_dispatch_posts_its_output_as_a_pr_comment(cfg, store, fake_bin):
     fake_bin.respond("gh pr view", stdout=json.dumps({"headRefOid": "9c1f0ab"}))
     fake_bin.respond("claude", stdout="the review body")

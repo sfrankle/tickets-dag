@@ -153,6 +153,39 @@ def test_handoff_args_are_passed_through(cfg, store, fake_bin, tmp_path):
     assert "--permission-mode" in fake_bin.calls_to("claude")[0]
 
 
+def test_a_prompt_gets_the_ticket_filled_in(cfg, store, fake_bin):
+    """A restricted step cannot read its env, so a prompt that names `$TICKET_STORE` is a guess (#50)."""
+    (cfg.root / "prompts" / "describe.md").write_text(
+        "{key} in {repo}, store {store}, worktree {worktree}.\n"
+    )
+    run_step(cfg, store, ticket_doc(), cfg.step("describe"))
+    assert fake_bin.stdin_to("claude")[0] == (
+        f"ABC-123 in acme/api, store {cfg.store}, worktree {cfg.root}.\n"
+    )
+
+
+def test_a_prompt_keeps_braces_that_name_nothing(cfg, store, fake_bin):
+    """Prompts passed through verbatim before #50, so JSON or a code sample in one must survive."""
+    text = 'Reply with {"status": "ok"} and leave {stor} and {{key}} be.\n'
+    (cfg.root / "prompts" / "describe.md").write_text(text)
+    run_step(cfg, store, ticket_doc(), cfg.step("describe"))
+    assert fake_bin.stdin_to("claude")[0] == text.replace("{key}", "ABC-123")
+
+
+def test_handoff_args_get_the_ticket_filled_in(cfg, store, fake_bin, tmp_path):
+    """An `--add-dir` naming the store no longer has to be a literal path (#50)."""
+    config = tmp_path / "config.yml"
+    config.write_text(
+        CONFIG.replace(
+            "  - id: describe\n    model: haiku\n",
+            '  - id: describe\n    model: haiku\n    args: [--add-dir, "{store}/tickets/{key}"]\n',
+        )
+    )
+    scoped = load_config(config)
+    run_step(scoped, store, ticket_doc(), scoped.step("describe"))
+    assert f"{scoped.store}/tickets/ABC-123" in fake_bin.calls_to("claude")[0]
+
+
 def test_a_step_runs_in_the_worktree_once_one_is_registered(cfg, store):
     write_script(cfg, "draft-pr.sh", "pwd\n")
     checkout = cfg.root / "checkout"

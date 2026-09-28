@@ -90,15 +90,14 @@ def unknown_repo(cfg: Config, repo: str, key: str) -> str:
 
 
 def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
-    repo = known_repo(cfg, ticket)
+    values = placeholders(cfg, ticket)
+    repo = values["repo"]
     env = dict(os.environ)
-    env["TICKET_KEY"] = ticket["key"]
-    env["TICKET_REPO"] = repo
-    env["TICKET_STORE"] = str(cfg.store)
+    # TICKET_KEY, TICKET_REPO, TICKET_STORE and TICKET_WORKTREE are what `fill` puts in, so the two cannot drift.
+    env.update({f"TICKET_{name.upper()}": value for name, value in values.items()})
     env["TICKET_BRANCH"] = cfg.worktrees.branch_for(ticket["key"], repo)
     env["TICKET_USE_WORKTREES"] = "1" if cfg.worktrees.enabled else "0"
     env["TICKET_WORKTREE_ROOT"] = str(cfg.worktrees.root)
-    env["TICKET_WORKTREE"] = str(_planned_workdir(cfg, ticket))
     repo_path = cfg.repo_path(repo)
     if repo_path:
         env["TICKET_REPO_PATH"] = str(repo_path)
@@ -110,12 +109,50 @@ def step_env(cfg: Config, ticket: dict) -> dict[str, str]:
     return env
 
 
-def _argv(cfg: Config, step: Step) -> tuple[list[str], str | None]:
+# Only these names are filled, and every other brace passes through: prompts went to `claude` verbatim before #50, so JSON or a code sample in one is legal.
+PLACEHOLDER = re.compile(r"\{(key|repo|store|worktree)\}")
+
+
+def placeholders(cfg: Config, ticket: dict) -> dict[str, str]:
+    """What `fill` puts in, the same values as the `TICKET_*` variables of the same names."""
+    return {
+        "key": ticket["key"],
+        "repo": known_repo(cfg, ticket),
+        "store": str(cfg.store),
+        "worktree": str(_planned_workdir(cfg, ticket)),
+    }
+
+
+def fill(text: str, cfg: Config, ticket: dict) -> str:
+    """`text` with `{key}`, `{repo}`, `{store}` and `{worktree}` filled in, for everything the engine hands to `claude` itself (#50).
+
+    A session started with `--allowedTools` cannot read its environment: Claude Code refuses a shell expansion, and `printenv` is blocked where credentials live in the shell.
+    So a prompt that names `$TICKET_STORE` sends the model guessing, and an `--add-dir` naming the store had to be a literal path.
+    One pass, so a filled value that itself contains `{key}` is left as it is.
+    """
+    values = placeholders(cfg, ticket)
+    return PLACEHOLDER.sub(lambda match: values[match.group(1)], text)
+
+
+def claude_argv(
+    cfg: Config, ticket: dict, model: str, args: tuple[str, ...]
+) -> list[str]:
+    """`claude -p` for a session about `ticket`, its `args` filled: a handoff, a local review and a hard fix all start here, so none can skip the fill (#50)."""
+    return [
+        "claude",
+        "-p",
+        "--model",
+        cfg.model_id(model),
+        *(fill(arg, cfg, ticket) for arg in args),
+    ]
+
+
+def _argv(cfg: Config, step: Step, ticket: dict) -> tuple[list[str], str | None]:
     """(argv, stdin). Prompts go on stdin, never argv — decision #21."""
     if step.kind == "script":
         return [str(cfg.path_to(step.run))], None
-    argv = ["claude", "-p", "--model", cfg.model_id(step.model), *step.args]
-    return argv, cfg.path_to(step.prompt).read_text()
+    argv = claude_argv(cfg, ticket, step.model, step.args)
+    return argv, fill(cfg.path_to(step.prompt).read_text(), cfg, ticket)
 
 
 # How long a stopped step gets to exit on SIGTERM before its group is killed outright.
@@ -331,7 +368,7 @@ def run_step(
     if step.kind == "gate":
         return StepResult("parked")
 
-    argv, stdin_text = _argv(cfg, step)
+    argv, stdin_text = _argv(cfg, step, ticket)
     # Before the dry-run and the fetch: a dry run that says "would run" for a step that cannot start is a lie, and a fetch into a missing directory is the same fault told worse.
     cwd = workdir(cfg, ticket)
     if dry_run:

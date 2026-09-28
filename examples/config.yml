@@ -118,6 +118,8 @@ steps:
     needs: [worktree]
     # `args:` is appended to the claude argv. This is where agent mode goes —
     # a handoff that has to write files needs it.
+    # `{key}`, `{repo}`, `{store}` and `{worktree}` are filled in here and in the prompt, e.g. [--add-dir, "{store}"].
+    # With an `--allowedTools` list, `--permission-mode dontAsk` refuses an unlisted command at once where `acceptEdits` waits on a prompt nobody answers; see README.
     args: [--permission-mode, acceptEdits]
 
   - id: draft-pr
